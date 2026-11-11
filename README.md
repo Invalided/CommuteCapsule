@@ -4,9 +4,9 @@
 
 > 本仓库只包含引擎、界面和通用数据接口，**不包含任何真实线路、站点或到站数据**。装上后默认使用内置的虚构城市「演示城市」，可以把完整流程走一遍。
 
-[![演示视频](docs/images/demo-cover.jpg)](docs/media/demo.mp4)
+![演示动画](docs/images/demo-preview.gif)
 
-<sub>演示视频（约 2 分钟，站点均为虚构）</sub>
+<sub>演示模式实机录屏（1.6 倍速，站点均为虚构）。完整演示视频（2 分 14 秒，含音频）：[docs/media/demo.mp4](docs/media/demo.mp4)</sub>
 
 ## 能做什么
 
