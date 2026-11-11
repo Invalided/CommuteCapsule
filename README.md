@@ -8,7 +8,7 @@
 
 ## 演示视频
 
-<p align="center"><video src="https://github.com/user-attachments/assets/ed941a36-0ca4-4f84-857b-b4fdbf0b71c9" controls muted width="720"></video></p>
+https://github.com/user-attachments/assets/ed941a36-0ca4-4f84-857b-b4fdbf0b71c9
 
 <p align="center"><sub>时长 2 分 14 秒，含音频（默认静音），线路与站点均为虚构。</sub></p>
 
