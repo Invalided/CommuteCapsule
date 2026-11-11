@@ -4,6 +4,10 @@
 
 > 本仓库只包含引擎、界面和通用数据接口，**不包含任何真实线路、站点或到站数据**。装上后默认使用内置的虚构城市「演示城市」，可以把完整流程走一遍。
 
+[![演示视频](docs/images/demo-cover.jpg)](docs/media/demo.mp4)
+
+<sub>演示视频（约 2 分钟，站点均为虚构）</sub>
+
 ## 能做什么
 
 - **多段行程**：公交 / 地铁 / 自定义班车混合换乘，每段可设多个候选，哪个先来坐哪个
@@ -15,12 +19,7 @@
 
 ## 架构
 
-```
-数据源（用户自接）          引擎（本仓库）                        界面
-StaticSource ─┐      Decision / BusRide / MetroCells        Compose
-RealtimeSource┴─▶ Transit ─▶ CommuteService ─▶ LiveNotifier ─▶ 实时通知胶囊
-                       学习层：WalkLearn / BusTimetable / Places / MetroTacLearner
-```
+![架构图](docs/images/architecture.png)
 
 - `Transit.kt`：数据接口层。定义线路、站点、来车信息的统一格式，以及数据源要实现的两个接口（`StaticSource` / `RealtimeSource`）。引擎只认这层，换数据源不用改引擎；坐标统一 WGS-84
 - `MockSource.kt`：内置虚构数据源，也是实现新数据源的参考
