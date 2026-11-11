@@ -4,26 +4,26 @@
 
 > 本仓库只包含引擎、界面和通用数据接口，**不包含任何真实线路、站点或到站数据**。装上后默认使用内置的虚构城市「演示城市」，可以把完整流程走一遍。
 
-<p align="center"><img src="docs/images/cover.jpg" width="360" alt="通勤胶囊"></p>
+<p align="center"><img src="docs/images/cover.jpg" width="720" alt="通勤胶囊"></p>
 
-https://github.com/user-attachments/assets/ed941a36-0ca4-4f84-857b-b4fdbf0b71c9
+## 演示视频
 
-<sub>演示视频（2 分 14 秒，含音频，站点均为虚构）</sub>
+<p align="center"><video src="https://github.com/user-attachments/assets/ed941a36-0ca4-4f84-857b-b4fdbf0b71c9" controls muted width="720"></video></p>
+
+<p align="center"><sub>时长 2 分 14 秒，含音频（默认静音），线路与站点均为虚构。</sub></p>
 
 ## 截图
 
 <table>
   <tr>
-    <td align="center"><img src="docs/images/screenshot-notification.jpg" width="200" alt="出发提醒与状态栏胶囊"></td>
-    <td align="center"><img src="docs/images/screenshot-station.jpg" width="200" alt="进站"></td>
-    <td align="center"><img src="docs/images/screenshot-riding.jpg" width="200" alt="乘车中"></td>
-    <td align="center"><img src="docs/images/screenshot-arrived.jpg" width="200" alt="到达"></td>
+    <td align="center" width="33%"><img src="docs/images/screenshot-1-depart.jpg" width="240" alt="出发前：步行与进站倒计时"><br><sub>出发前：步行与进站倒计时</sub></td>
+    <td align="center" width="33%"><img src="docs/images/screenshot-2-station.jpg" width="240" alt="已进站：本趟与下趟时间"><br><sub>已进站：本趟与下趟时间</sub></td>
+    <td align="center" width="33%"><img src="docs/images/screenshot-3-capsule.jpg" width="240" alt="熄屏状态栏胶囊"><br><sub>熄屏状态栏胶囊</sub></td>
   </tr>
   <tr>
-    <td align="center">出发提醒与状态栏胶囊</td>
-    <td align="center">进站：预计进站与下趟时间</td>
-    <td align="center">乘车中：剩余站数与下车时间</td>
-    <td align="center">到达：全程用时</td>
+    <td align="center" width="33%"><img src="docs/images/screenshot-4-riding.jpg" width="240" alt="乘车中：剩余站数与下车时间"><br><sub>乘车中：剩余站数与下车时间</sub></td>
+    <td align="center" width="33%"><img src="docs/images/screenshot-5-alight.jpg" width="240" alt="准备下车提醒"><br><sub>准备下车提醒</sub></td>
+    <td align="center" width="33%"><img src="docs/images/screenshot-6-arrived.jpg" width="240" alt="到达：全程用时"><br><sub>到达：全程用时</sub></td>
   </tr>
 </table>
 
