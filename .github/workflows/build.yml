@@ -1,0 +1,91 @@
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要标签来算版本号
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      # 版本号：打 v 标签时就是标签本身；平时是「上一个标签的下一个修订号-dev.运行号」
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            LAST=$(git describe --tags --abbrev=0 --match 'v*.*.*' 2>/dev/null || echo v0.3.0)
+            IFS=. read -r A B C <<< "${LAST#v}"
+            V="$A.$B.$((C+1))-dev.${{ github.run_number }}"
+          fi
+          echo "VERSION_NAME=$V" >> "$GITHUB_ENV"
+          echo "版本 $V"
+
+      # 固定签名（可选）：仓库 Secrets 里配了才用，否则用默认调试签名
+      - name: Signing key
+        env:
+          KS: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build and test
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: gradle --no-daemon assembleDebug testDebugUnitTest
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk "CommuteCapsule-$VERSION_NAME.apk"
+
+      # 确认数据源模板能编译（不影响上面已经打好的 APK）
+      - name: Check example source
+        run: |
+          cp -r examples/json-source app/src/extra
+          gradle --no-daemon compileDebugKotlin
+          rm -rf app/src/extra
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CommuteCapsule-${{ env.VERSION_NAME }}
+          path: CommuteCapsule-${{ env.VERSION_NAME }}.apk
+
+      # 只有打标签才发正式版，说明取自 CHANGELOG.md 里对应版本那一节
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          awk -v v="$VERSION_NAME" '
+            $0 ~ "^## \\[" v "\\]" {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "见 CHANGELOG.md" > notes.md
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: 通勤胶囊 v${{ env.VERSION_NAME }}
+          body_path: notes.md
+          files: CommuteCapsule-${{ env.VERSION_NAME }}.apk
+          make_latest: true
