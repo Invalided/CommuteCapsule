@@ -4,9 +4,30 @@
 
 > 本仓库只包含引擎、界面和通用数据接口，**不包含任何真实线路、站点或到站数据**。装上后默认使用内置的虚构城市「演示城市」，可以把完整流程走一遍。
 
-![演示动画](docs/images/demo-preview.gif)
+<p align="center"><img src="docs/images/cover.jpg" width="360" alt="通勤胶囊"></p>
 
-<sub>演示模式实机录屏（1.6 倍速，站点均为虚构）。完整演示视频（2 分 14 秒，含音频）：[docs/media/demo.mp4](docs/media/demo.mp4)</sub>
+https://github.com/user-attachments/assets/ed941a36-0ca4-4f84-857b-b4fdbf0b71c9
+
+<sub>演示视频（2 分 14 秒，含音频，站点均为虚构）</sub>
+
+## 截图
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/screenshot-notification.jpg" width="200" alt="出发提醒与状态栏胶囊"></td>
+    <td align="center"><img src="docs/images/screenshot-station.jpg" width="200" alt="进站"></td>
+    <td align="center"><img src="docs/images/screenshot-riding.jpg" width="200" alt="乘车中"></td>
+    <td align="center"><img src="docs/images/screenshot-arrived.jpg" width="200" alt="到达"></td>
+  </tr>
+  <tr>
+    <td align="center">出发提醒与状态栏胶囊</td>
+    <td align="center">进站：预计进站与下趟时间</td>
+    <td align="center">乘车中：剩余站数与下车时间</td>
+    <td align="center">到达：全程用时</td>
+  </tr>
+</table>
+
+<sub>以上截图均为演示模式实机录屏，线路与站点均为虚构。</sub>
 
 ## 能做什么
 
