@@ -154,6 +154,8 @@ class CommuteService : Service() {
         private const val EXTRA_RESTART = "restart"
         private const val MANUAL_RUN_MS = 30 * 60_000L
         private const val UNDO_MS = 2 * 60_000L
+        /** 实时显示车已到站后，多长时间内出现车速定位即判上车（毫秒） */
+        const val BUS_AT_STOP_BOARD_MS = 8 * 60_000L
         /** 否决基站进站所需的 GPS 精度（米） */
         private const val ENTER_VETO_ACC = 50f
         /** 进站被否决后，持续停留在地下区号多久即补判进站 */
@@ -224,6 +226,7 @@ class CommuteService : Service() {
     private var boardedAt = 0L          // 上一段上车时间
     private var nearSince = 0L          // 第一次走到当前段上车点附近的时间
     private var fastFixes = 0
+    private var busAtStopAt = 0L        // 在站牌旁时实时显示所等的车已到站的时刻（用于判上车）
     private var busFastLogged = 0L
     private var alertedKey: String? = null
     private val maxStops = HashMap<String, Int>()
@@ -323,7 +326,7 @@ class CommuteService : Service() {
         metroExitSeen = false; metroExitAt = 0L
         joinLeg = -1; joinSkip = 0; joinScale = 1.0; joinOrigStop = ""; joinStop = ""; joinCandIdx = -1; joinCandAt = 0L; joinCandFixT = 0L; pendingJoin = null
         placeStart = null; arrived = false; lastPlace = null; placeSince = 0L; startLabel = null; busHitTimes.clear(); tail = false; tailFixes.clear(); startVoted = false
-        legIdx = 0; boardedAt = 0L; nearSince = 0L; fastFixes = 0; alertedKey = null; planDone = false; planAlerted = ""; resetWalkCommit(); xferArriveAt = 0L
+        legIdx = 0; boardedAt = 0L; nearSince = 0L; busAtStopAt = 0L; fastFixes = 0; alertedKey = null; planDone = false; planAlerted = ""; resetWalkCommit(); xferArriveAt = 0L
         maxStops.clear(); maxEta.clear()
         manualRun = manual; pendingBoardAt = 0L; pendingBoardLoc = null; boardCommitted = false; riding = false; transferAlerted = false; xferHoldSince = 0L; arriveAlertedAt = 0L
         speeds.clear(); routeHits.clear(); lastGpsFix = null
@@ -586,7 +589,7 @@ class CommuteService : Service() {
         }
         boardedAt = now
         legIdx++
-        nearSince = 0L; fastFixes = 0; alertedKey = null; transferAlerted = false; xferHoldSince = 0L; resetWalkCommit(); xferArriveAt = 0L
+        nearSince = 0L; busAtStopAt = 0L; fastFixes = 0; alertedKey = null; transferAlerted = false; xferHoldSince = 0L; resetWalkCommit(); xferArriveAt = 0L
         alightAt = 0L; rideLearned = false; stopAlerted = ""; stepSensor(false)
         stationByTap = false; arriveAnchorAt = 0L
         deferredTapAt = 0L; deferredTapKind = null
@@ -986,6 +989,7 @@ class CommuteService : Service() {
         }
         // 已在站牌边：车 2 分钟内到，再提醒一次（每班车一次）
         val arrSec = a.arrival?.etaSec ?: -1
+        if (nearSince > 0 && !riding && !leg.isMetroOnly() && a.option?.candidate?.isMetro() != true && arrSec in 0..60) busAtStopAt = now
         val busKey = "${a.option?.candidate?.label()}|${a.arrival?.busId}"
         if (nearSince > 0 && arrSec in 0..120 && stopAlerted != busKey && a.option?.candidate?.isMetro() != true) {
             stopAlerted = busKey
@@ -1824,6 +1828,14 @@ class CommuteService : Service() {
 
         if (spd != null && trusted && busJumpCheck(loc, spd)) return
 
+        // 在站牌旁、实时显示所等的车刚到站，之后第一个可信车速定位即判上车（进程冻结时 GPS 稀疏，凑不齐 3 次快速定位）
+        if (nearSince > 0 && busAtStopAt > 0 && loc.time - busAtStopAt in 0..BUS_AT_STOP_BOARD_MS && spd != null && trusted &&
+            spd > 6f && !trip.legs[legIdx].isMetroOnly() && onRoute(loc, trip.legs[legIdx])) {
+            TraceLog.event("bus_board", "by" to "at_stop", "spd" to spd, "busAt" to busAtStopAt)
+            val at = busAtStopAt
+            busAtStopAt = 0L; speeds.clear(); routeHits.clear()
+            onBoarded(manual = false, at = at); return
+        }
         // 到过上车点、现在速度很快 → 大概率上车了
         // 地铁段不看车速：站口附近跑两步、打车到站口都会被当成「车开了」；地铁上车只认刷卡 / 地下基站 / 列车晃动
         if (nearSince > 0 && spd != null && trusted && spd > 6f && !trip.legs[legIdx].isMetroOnly()) {
@@ -2041,7 +2053,7 @@ class CommuteService : Service() {
         val sub = MetroRoute(r.stations.drop(j), (r.durSec * joinScale).toInt())
         metroRoutes[i] = sub; metroRideSec[i] = sub.durSec
         if (i == 0) firstWalkDone = true   // 不是从平常的地方出发，首段步行不学
-        nearSince = 0L
+        nearSince = 0L; busAtStopAt = 0L
         TraceLog.event("join", "leg" to i, "skip" to j, "left" to sub.hops)
         Diag.mark(this, "从沿线 ${st.name} 上车，按剩下 ${sub.hops} 站算")
         saveRun(deadlineAt)
@@ -2625,6 +2637,14 @@ class CommuteService : Service() {
     /** 用户点「结束」：这是真实到站/放弃的时刻，记录下来作为对照 */
     fun userFinish() {
         TraceLog.event("user_end", "leg" to legIdx, "riding" to riding)
+        // 尚未上车即被关闭，且人仍在家/公司（或由围栏拉起、尚无可靠定位）：视为未出发，
+        // 不计入「今天已经走过」，之后真正离开时仍可自动启动
+        val neverBoarded = legIdx == 0 && boardedAt == 0L && !riding
+        val atPlace = lastPlace == Places.Label.HOME || lastPlace == Places.Label.WORK
+        if (::trip.isInitialized && neverBoarded && !restored && (atPlace || (geoStart && lastPlace == null))) {
+            TraceLog.event("user_end_prestart", "label" to (lastPlace?.name ?: ""), "geo" to geoStart)
+            Scheduler.unmarkRan(this, trip.id); GeoWatch.unmarkToday(this, trip.id)
+        }
         scope.launch(Dispatchers.Main) { loop?.cancel(); finish() }
     }
 

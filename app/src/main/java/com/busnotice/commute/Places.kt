@@ -210,6 +210,11 @@ object Places {
         return if (hits.size == 2) Label.ON_THE_WAY else Label.UNKNOWN
     }
 
+    /** 到最近一个已确认地点（家/公司）的距离，米；都未确认时返回 null */
+    @Synchronized
+    fun distanceToConfirmedM(ctx: Context, lat: Double, lng: Double): Double? =
+        Kind.values().mapNotNull { k -> confirmed(ctx, k)?.let { Geo.distanceM(lat, lng, it.first, it.second) } }.minOrNull()
+
     /** 学习进度 0..3：两个地点里较慢的那个（不满 2 天最多算 2） */
     @Synchronized
     fun progress(ctx: Context): Int = Kind.values().minOf { progressOf(ctx, it) }
