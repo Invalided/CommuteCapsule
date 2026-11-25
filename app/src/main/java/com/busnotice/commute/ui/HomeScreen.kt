@@ -104,7 +104,7 @@ private data class Perm(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit) {
+fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit, onSettings: () -> Unit = {}) {
     val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
     val ink = Fuse.ink(dark)
@@ -239,6 +239,10 @@ fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit) {
                                     )
                                 }
                                 DropdownMenuItem(
+                                    text = { Text("设置") },
+                                    onClick = { menuOpen = false; onSettings() },
+                                )
+                                DropdownMenuItem(
                                     text = { Text("数据源") },
                                     onClick = { menuOpen = false; sourceOpen = true },
                                 )
@@ -246,7 +250,7 @@ fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit) {
                                     text = { Text("重置常去地点") },
                                     onClick = {
                                         menuOpen = false; Places.reset(ctx); placeVer++
-                                        scope.launch { snack.showSnackbar("已清空常去地点，会重新学习") }
+                                        scope.launch { snack.showSnackbar("已清空自动学到的常去地点，会重新学习；手动设置的保留") }
                                     },
                                 )
                                 diag?.let { d ->

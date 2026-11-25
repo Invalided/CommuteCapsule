@@ -16,7 +16,8 @@ import java.time.ZoneId
  *     夜里（21 点–次日 7 点前）样本最多、且跨 ≥ 3 天的点 = 家；工作日白天（10–17 点前）样本最多、跨 ≥ 3 天的另一个点 = 公司。
  *     采样点只存本机，不进导出轨迹。采样学出来的就用采样的，没学出来才用 1、2 的投票。
  * 同类的票 150 米内并成一个点（按精度加权的滑动中心），≥ 3 票且来自 ≥ 2 天才算确认。
- * 目前只用来显示状态，不参与任何行程判断。
+ * 用户也可以手动设置家 / 公司（用当时的定位）：手动设置优先于自动学到的结果，自动学习只更新自己的数据，
+ * 永远不会覆盖或清除手动设置；只有用户自己能修改或清除。
  */
 object Places {
     enum class Kind { HOME, WORK }
@@ -194,8 +195,46 @@ object Places {
         return (derivedBest?.get(k) ?: 0).coerceAtMost(NEED_SAMPLE_DAYS)
     }
 
-    /** 确认的地点：先用采样学出来的，没有才用投票的 */
+    // ---------- 手动设置 ----------
+    private fun manualKey(k: Kind) = "manual_${k.name}"
+
+    /** 用户手动设置的位置；没有设置返回 null */
+    fun manual(ctx: Context, kind: Kind): Pair<Double, Double>? {
+        val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(manualKey(kind), null) ?: return null
+        return parseManual(raw)
+    }
+
+    /** 手动设置家 / 公司（只由用户操作调用）；之后自动学习不会改动它 */
+    fun setManual(ctx: Context, kind: Kind, lat: Double, lng: Double) {
+        if (lat.isNaN() || lng.isNaN()) return
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(manualKey(kind), formatManual(lat, lng)).apply()
+    }
+
+    /** 清除手动设置，改回自动学习的结果 */
+    fun clearManual(ctx: Context, kind: Kind) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(manualKey(kind)).apply()
+    }
+
+    fun formatManual(lat: Double, lng: Double) = "$lat,$lng"
+
+    fun parseManual(raw: String): Pair<Double, Double>? {
+        val p = raw.split(',')
+        if (p.size != 2) return null
+        val la = p[0].trim().toDoubleOrNull() ?: return null
+        val ln = p[1].trim().toDoubleOrNull() ?: return null
+        return if (la.isNaN() || ln.isNaN()) null else la to ln
+    }
+
+    /** 自动学到的地点（不含手动设置）：先用采样学出来的，没有才用投票的 */
+    @Synchronized
+    fun learned(ctx: Context, kind: Kind): Pair<Double, Double>? {
+        derive(ctx)[kind]?.let { return it.lat to it.lng }
+        return load(ctx).filter { it.kind == kind && it.confirmed }.maxByOrNull { it.votes }?.let { it.lat to it.lng }
+    }
+
+    /** 确认的地点：手动设置优先，其次是采样学出来的，最后是投票的 */
     private fun confirmed(ctx: Context, kind: Kind): Pair<Double, Double>? {
+        manual(ctx, kind)?.let { return it }
         derive(ctx)[kind]?.let { return it.lat to it.lng }
         return load(ctx).filter { it.kind == kind && it.confirmed }.maxByOrNull { it.votes }?.let { it.lat to it.lng }
     }
@@ -222,7 +261,7 @@ object Places {
     /** 单个地点的进度 0..3（首页分别显示「家」「公司」的学习进度） */
     @Synchronized
     fun progressOf(ctx: Context, k: Kind): Int {
-        if (derive(ctx)[k] != null) return NEED_VOTES
+        if (manual(ctx, k) != null || derive(ctx)[k] != null) return NEED_VOTES
         val v = load(ctx).filter { it.kind == k }.maxOfOrNull { c ->
             if (c.confirmed) NEED_VOTES else c.votes.coerceAtMost(if (c.days.size >= NEED_DAYS) NEED_VOTES else NEED_VOTES - 1)
         } ?: 0
@@ -231,10 +270,13 @@ object Places {
 
     fun bothConfirmed(ctx: Context) = Kind.values().all { confirmed(ctx, it) != null }
 
+    /** 清空自动学习的数据（投票和采样）；手动设置的家 / 公司保留 */
     @Synchronized
     fun reset(ctx: Context) {
         cache = mutableListOf(); samplesCache = mutableListOf(); derivedCache = null; derivedBest = null
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+        val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val keep = Kind.values().mapNotNull { k -> sp.getString(manualKey(k), null)?.let { manualKey(k) to it } }
+        sp.edit().clear().apply { keep.forEach { (k, v) -> putString(k, v) } }.apply()
     }
 
     fun text(l: Label): String? = when (l) {

@@ -20,6 +20,7 @@ sealed interface Screen {
     data class PickBus(val legIndex: Int) : Screen
     data class PickMetro(val legIndex: Int) : Screen
     data class EditShuttle(val legIndex: Int, val candidateIndex: Int) : Screen
+    data object Settings : Screen
 }
 
 @Composable
@@ -47,7 +48,11 @@ fun App(resumeTick: Int) {
     }
 
     BackHandler(enabled = screen != Screen.Home) {
-        if (screen == Screen.Edit) leaveEditor() else screen = Screen.Edit
+        when (screen) {
+            Screen.Edit -> leaveEditor()
+            Screen.Settings -> screen = Screen.Home
+            else -> screen = Screen.Edit
+        }
     }
 
     when (val s = screen) {
@@ -55,7 +60,9 @@ fun App(resumeTick: Int) {
             resumeTick = resumeTick,
             onNew = { openEditor(Trip(legs = listOf(Leg(emptyList())))) },
             onEdit = { openEditor(it) },
+            onSettings = { screen = Screen.Settings },
         )
+        Screen.Settings -> SettingsScreen(onBack = { screen = Screen.Home })
         Screen.Edit -> TripEditor(
             trip = draft,
             onChange = { draft = it },
