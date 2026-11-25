@@ -53,4 +53,10 @@ class DepartAdvisorTest {
         val p = DepartAdvisor.plan(emptyList(), 36, earliest = 0, scheduled = listOf(20 * m, 42 * m))!!
         assertEquals(42 * m, p.busAt)
     }
+
+    @Test fun timetableEarlyQuantile() {
+        val days = listOf(listOf(1157.0), listOf(1159.0), listOf(1160.0), listOf(1161.0), listOf(1162.0))
+        assertEquals(1160.0, DepartAdvisor.timetable(days)[0], 1e-9)
+        assertEquals(1159.0, DepartAdvisor.timetable(days, quantile = DepartAdvisor.EARLY_QUANTILE)[0], 1e-9)
+    }
 }

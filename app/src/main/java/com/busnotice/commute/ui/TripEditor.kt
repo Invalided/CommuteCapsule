@@ -46,6 +46,7 @@ import com.busnotice.commute.Transit
 import com.busnotice.commute.MetroRoute
 import com.busnotice.commute.SubwayDir
 import com.busnotice.commute.Learn
+import com.busnotice.commute.WalkLearn
 import com.busnotice.commute.MetroRoutes
 import com.busnotice.commute.Loc
 import kotlinx.coroutines.Dispatchers
@@ -192,12 +193,13 @@ fun TripEditor(
                     onAddShuttle = { onEditShuttle(i, -1) },
                     onEditShuttle = { ci -> onEditShuttle(i, ci) },
                     learnedRide = remember(trip.id, i) { Learn.rideMin(ctx, trip.id, i) },
+                    xferSuggest = remember(trip.id, i) { if (i > 0) WalkLearn.transferSuggestion(ctx, trip.id, i) else null },
                     nextStop = trip.legs.getOrNull(i + 1)?.candidates?.firstOrNull(),
                     onSplit = {
                         // 一段里上车站不同的几条线 → 按上车站拆成先后几段（地铁在前）
                         val groups = leg.candidates.groupBy { it.stopName }.values
                             .sortedBy { g -> if (g.any { it.type == Candidate.Type.METRO }) 0 else 1 }
-                        val parts = groups.mapIndexed { k, g -> Leg(g, rideMin = leg.rideMin, transferWalkMin = if (k == 0) leg.transferWalkMin else 3) }
+                        val parts = groups.mapIndexed { k, g -> Leg(g, rideMin = leg.rideMin, transferWalkMin = if (k == 0) leg.transferWalkMin else 5) }
                         onChange(trip.copy(legs = trip.legs.toMutableList().also { l -> l.removeAt(i); l.addAll(i, parts) }))
                     },
                 )
@@ -256,6 +258,7 @@ private fun LegCard(
     onChange: (Leg) -> Unit, onRemove: () -> Unit,
     onAddBus: () -> Unit, onAddMetro: () -> Unit, onAddShuttle: () -> Unit, onEditShuttle: (Int) -> Unit,
     learnedRide: Int? = null,
+    xferSuggest: Pair<Int, Int>? = null,
 ) {
     var editing by remember { mutableStateOf<Int?>(null) }
     editing?.let { ci ->
@@ -276,6 +279,16 @@ private fun LegCard(
             }
             if (index > 0) {
                 Stepper("从上一段下车走过来", leg.transferWalkMin, 0, 30) { onChange(leg.copy(transferWalkMin = it)) }
+                // 学到的换乘步行用时只作建议，由用户决定是否采用
+                if (xferSuggest != null && xferSuggest.first != leg.transferWalkMin) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 6.dp)) {
+                        Text("实测换乘通常约 ${xferSuggest.first} 分钟（${xferSuggest.second} 次）", fontSize = 12.sp, lineHeight = 17.sp,
+                            color = dim, modifier = Modifier.weight(1f))
+                        PillButton(secondary = true, onClick = { onChange(leg.copy(transferWalkMin = xferSuggest.first)) }) {
+                            Text("改为 ${xferSuggest.first} 分钟", fontSize = 12.sp)
+                        }
+                    }
+                }
             }
             if (leg.candidates.isEmpty()) {
                 Text("同一处上车的几种车都可以加进来，哪个先到提示哪个；先坐 A 再换 B 请用下面的「添加一段（换乘）」",

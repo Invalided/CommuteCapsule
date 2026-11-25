@@ -99,7 +99,7 @@ object BusSampler {
             val last = runCatching { JSONObject(prefs.getString(k, "{}") ?: "{}").optLong("t") }.getOrDefault(0L)
             if (now - last < 3 * 60_000L) continue
             val rt = runCatching { Transit.lineRealtime(c, c.lat, c.lng) }.getOrNull()
-            if (rt == null) { write(ctx, JSONObject().put("t", now).put("k", "bus_fail").put("key", k)); continue }
+            if (rt == null) { write(ctx, JSONObject().put("t", now).put("k", "bus_fail").put("key", k).put("cause", NetDiag.cause(ctx).tag)); continue }
             observe(ctx, c, rt, "bg")
             DepartAdvisor.onRealtime(ctx, c, rt, now)
         }

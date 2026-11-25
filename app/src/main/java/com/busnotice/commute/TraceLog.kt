@@ -89,7 +89,7 @@ object TraceLog {
         if (sd >= 8.0) { magLastAct = t; magMoving = true }
         else if (magMoving && t - magLastAct >= 25_000L) { magMoving = false; event("mag_stop", "quietFrom" to magLastAct) }
     }
-    private const val RECENT_MAX = 450   // 约 15 分钟：等车上车的判断要回看进站以来的全部窗口
+    private const val RECENT_MAX = 900   // 约 30 分钟：等车上车与换乘步行学习需回看下车以来的全部窗口
 
     fun recentWindows(): List<AccMotion.Win> = synchronized(recent) { recent.toList() }
 

@@ -236,4 +236,14 @@ class DecisionTest {
         val r2 = BusRide.slice(all, -1, "", 0.0301, 0.0, "", 0.0499, 0.0)!!
         assertEquals(listOf("S3", "S4", "S5"), r2.map { it.name })
     }
+
+    @Test fun committedWalkDropsSafetyMargin() {
+        // 剩余步行 240 秒、车 242 秒到：未出发时需「快跑」，已在路上则来得及
+        assertEquals(Decision.Mode.HURRY, Decision.decide(listOf(opt(240, 242))).mode)
+        val c = Decision.Option(bus(), 240, listOf(Decision.Arrival(242, 2, "b1")), committed = true)
+        val a = Decision.decide(listOf(c))
+        assertEquals(Decision.Mode.LEAVE_NOW, a.mode); assertEquals("来得及", a.headline)
+        val late = Decision.Option(bus(), 240, listOf(Decision.Arrival(150, 1, "b1")), committed = true)
+        assertEquals(Decision.Mode.HURRY, Decision.decide(listOf(late)).mode)
+    }
 }

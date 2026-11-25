@@ -232,6 +232,13 @@ class CommuteService : Service() {
     private var riding = false          // 最后一段已上车，正在去下车站
     private var transferAlerted = false
     private var xferHoldSince = 0L
+    @Volatile private var lastNetCause: NetDiag.Cause? = null
+    // 「现在走」之后的步行跟踪：提醒时刻、当时估计的步行秒数、开始走路的时刻（加速度确认）
+    private var leaveAlertAt = 0L
+    private var leaveWalkSec = 0
+    private var walkCommitAt = 0L
+    private var hurryStreak = 0
+    private var xferArriveAt = 0L   // 换乘起点：上一段到站（下车）时刻，用于学习换乘步行用时
     private var arriveAlertedAt = 0L
     @Volatile private var alight: Pair<Double, Double>? = null
     private val metroDirs = java.util.concurrent.ConcurrentHashMap<String, List<SubwayDir>>()
@@ -316,7 +323,7 @@ class CommuteService : Service() {
         metroExitSeen = false; metroExitAt = 0L
         joinLeg = -1; joinSkip = 0; joinScale = 1.0; joinOrigStop = ""; joinStop = ""; joinCandIdx = -1; joinCandAt = 0L; joinCandFixT = 0L; pendingJoin = null
         placeStart = null; arrived = false; lastPlace = null; placeSince = 0L; startLabel = null; busHitTimes.clear(); tail = false; tailFixes.clear(); startVoted = false
-        legIdx = 0; boardedAt = 0L; nearSince = 0L; fastFixes = 0; alertedKey = null; planDone = false; planAlerted = ""
+        legIdx = 0; boardedAt = 0L; nearSince = 0L; fastFixes = 0; alertedKey = null; planDone = false; planAlerted = ""; resetWalkCommit(); xferArriveAt = 0L
         maxStops.clear(); maxEta.clear()
         manualRun = manual; pendingBoardAt = 0L; pendingBoardLoc = null; boardCommitted = false; riding = false; transferAlerted = false; xferHoldSince = 0L; arriveAlertedAt = 0L
         speeds.clear(); routeHits.clear(); lastGpsFix = null
@@ -579,7 +586,7 @@ class CommuteService : Service() {
         }
         boardedAt = now
         legIdx++
-        nearSince = 0L; fastFixes = 0; alertedKey = null; transferAlerted = false; xferHoldSince = 0L
+        nearSince = 0L; fastFixes = 0; alertedKey = null; transferAlerted = false; xferHoldSince = 0L; resetWalkCommit(); xferArriveAt = 0L
         alightAt = 0L; rideLearned = false; stopAlerted = ""; stepSensor(false)
         stationByTap = false; arriveAnchorAt = 0L
         deferredTapAt = 0L; deferredTapKind = null
@@ -725,9 +732,12 @@ class CommuteService : Service() {
         val nearOk = !metroUnsure || (loc != null && loc.accuracy <= 100 && now >= prevArrive - 5 * 60_000L)
         if (metroUnsure && nearOk && nearest != null && nearest <= 300) {
             markAlight(now, "near")
+            // 按位置判定下车通常偏晚：换乘起点取预计到站与判定时刻中较早者
+            if (prevArrive in (boardedAt + 1) until now) xferArriveAt = prevArrive
         }
         if (nearest != null && nearest <= NEAR_STOP_M && nearSince == 0L && nearOk) {
             nearSince = now
+            runCatching { learnTransferWalk(now + Decision.walkSeconds(nearest) * 1000L) }
             // 换乘到了：记下上一段实际坐了多久，下次推算换乘更准
             if (prev != null && boardedAt > 0 && !rideLearned) {
                 rideLearned = true
@@ -799,6 +809,7 @@ class CommuteService : Service() {
                     else -> now
                 }
                 alightAt = at; stepSensor(false); saveRun(deadlineAt)
+                xferArriveAt = if (by == "motion" || by == "cell_still" || expectArrive !in (boardedAt + 1) until at) at else expectArrive
                 Log.i(TAG, "判断已下地铁：$by")
                 TraceLog.event("alight_detect", "leg" to legIdx - 1, "by" to by, "at" to at)
                 if (by != "time" && !rideLearned) {
@@ -832,21 +843,31 @@ class CommuteService : Service() {
         }
 
         val secOfDay = LocalTime.now().toSecondOfDay()
+        val commitRem = if (!connecting && !leg.isMetroOnly()) walkCommitRemaining(now) else null
         val options = withContext(Dispatchers.IO) {
             leg.candidates.mapIndexed { i, c ->
                 async {
-                    val walk = if (connecting) connectSec else dists[i]?.let { Decision.walkSeconds(it) }
+                    val walk0 = if (connecting) connectSec else dists[i]?.let { Decision.walkSeconds(it) }
                         // 站里没定位：按换乘步行时间减去下车后已走的时间
                         ?: if (alightAt > 0) (leg.transferWalkMin * 60 - ((now - alightAt) / 1000).toInt()).coerceAtLeast(0) else 0
+                    // 已确认在步行前往站牌：剩余步行按提醒时的估计减去已走时间；只有高精度定位（≤ 20 米）才改用距离
+                    val committedWalk = if (commitRem != null && c.type == Candidate.Type.BUS) {
+                        val precise = loc?.takeIf { it.accuracy <= 20f && it.time > walkCommitAt }?.let { dists[i] }
+                        precise?.let { Decision.walkSeconds(it) } ?: commitRem
+                    } else null
+                    val walk = committedWalk ?: walk0
                     when (c.type) {
                         Candidate.Type.BUS -> {
                             val rt = runCatching {
                                 Transit.lineRealtime(c, loc?.latitude ?: c.lat, loc?.longitude ?: c.lng)
                             }.getOrNull()
                             rt?.let { BusSampler.observe(applicationContext, c, it, "trip") }
+                            val failTip = if (rt == null) NetDiag.cause(applicationContext).also { cz ->
+                                if (cz != lastNetCause) { lastNetCause = cz; TraceLog.event("bus_fail", "cause" to cz.tag) }
+                            }.text else { lastNetCause = null; "" }
                             Decision.Option(c, walk,
                                 rt?.buses?.map { Decision.Arrival(it.travelSec, it.stopsAway, it.busId) } ?: emptyList(),
-                                rt?.tip ?: "查询失败")
+                                rt?.tip ?: failTip, committed = committedWalk != null)
                         }
                         Candidate.Type.SHUTTLE -> Decision.Option(c, walk, Decision.shuttleArrivals(c, secOfDay))
                         Candidate.Type.METRO -> {
@@ -917,12 +938,26 @@ class CommuteService : Service() {
         val key = "${a.mode}|${a.option?.candidate?.label()}|${a.arrival?.busId}"
         // 还在地铁上（离到换乘站超过 5 分钟）：不弹公交的提醒
         val onMetro = connecting && prev?.isMetroOnly() == true && now < expectArrive - 5 * 60_000L
+        hurryStreak = if (a.mode == Decision.Mode.HURRY) hurryStreak + 1 else 0
+        // 去抖：同一班车提醒过「现在走」后，「快跑」需连续两次判断成立才提醒；提醒过「快跑」后不再回提「现在走」
+        val prevBus = alertedKey?.substringAfter('|')
+        val sameBus = prevBus != null && prevBus == key.substringAfter('|')
+        val prevMode = alertedKey?.substringBefore('|')
+        val suppress = sameBus && when (a.mode) {
+            Decision.Mode.HURRY -> prevMode == Decision.Mode.LEAVE_NOW.name && hurryStreak < 2
+            Decision.Mode.LEAVE_NOW -> prevMode == Decision.Mode.HURRY.name
+            else -> false
+        }
         if (!onMetro && (a.mode == Decision.Mode.LEAVE_NOW || a.mode == Decision.Mode.HURRY || a.mode == Decision.Mode.CONNECT_MISS) &&
-            alertedKey != key) {
+            alertedKey != key && !suppress) {
             alertedKey = key
             LiveNotifier.alert(this, "${a.headline} · ${a.option?.candidate?.label() ?: trip.name}", a.detail,
                 metro = a.option?.candidate?.isMetro() == true)
+            if (a.mode == Decision.Mode.LEAVE_NOW && a.walkSec > 0 && (leaveAlertAt == 0L || !sameBus)) {
+                leaveAlertAt = now; leaveWalkSec = a.walkSec; walkCommitAt = 0L
+            }
         }
+        if (!connecting && !leg.isMetroOnly()) checkWalkCommit(now)
         // 到换乘点：前一段为地面交通时按地理围栏（SURFACE_FENCE_M）提醒；前一段为地铁时离上车点 500 米内或按到站时刻提醒，弹一次
         // 倒计时只在没有新鲜定位、或定位也说已经不远时才算（实测：离换乘站还有 3.2 公里就按倒计时弹了）
         val tFresh = loc != null && now - loc.time < 120_000 && loc.accuracy < 200
@@ -979,6 +1014,26 @@ class CommuteService : Service() {
             hot || soonest < 600 -> 20_000L
             else -> 40_000L
         }
+    }
+
+    private fun resetWalkCommit() { leaveAlertAt = 0L; leaveWalkSec = 0; walkCommitAt = 0L; hurryStreak = 0 }
+
+    /** 「现在走」提醒后 5 分钟内，最近 60 秒有四成以上加速度窗口为走路 → 确认已出发 */
+    private fun checkWalkCommit(now: Long) {
+        if (leaveAlertAt == 0L || walkCommitAt > 0 || now - leaveAlertAt > 5 * 60_000L) return
+        val wins = TraceLog.recentWindows().filter { it.t > maxOf(now - 60_000L, leaveAlertAt - 30_000L) && it.t <= now }
+        if (wins.size < 10) return
+        val walking = wins.filter { AccMotion.classify(it) == AccMotion.Kind.WALK }
+        if (walking.size < wins.size * 0.4) return
+        walkCommitAt = walking.minOf { it.t } - AccMotion.WIN_MS
+        TraceLog.event("walk_commit", "at" to walkCommitAt, "walkSec" to leaveWalkSec, "afterAlertS" to (walkCommitAt - leaveAlertAt) / 1000)
+    }
+
+    /** 已确认在步行：剩余步行秒数（未到站牌前至少 30 秒）；未确认或超时返回 null */
+    private fun walkCommitRemaining(now: Long): Int? {
+        if (walkCommitAt == 0L || nearSince > 0) return null
+        if (now - walkCommitAt > leaveWalkSec * 1000L + 5 * 60_000L) return null
+        return (leaveWalkSec - ((now - walkCommitAt) / 1000).toInt()).coerceAtLeast(30)
     }
 
     /**
@@ -2229,6 +2284,20 @@ class CommuteService : Service() {
         TraceLog.event("walk_learn", "kind" to "first", "dur" to s.durSec, "path" to s.pathM, "walk" to s.walkSec, "spd" to s.speed, "partial" to partial)
     }
 
+    /**
+     * 换乘步行：从上一段到站（xferArriveAt）到走到本段站牌（reachAt）。
+     * 中途停留较久（如错过一班后在站外等候）时按加速度识别出的步行时长计；结果只作为行程设置里的建议值，不自动修改设置。
+     */
+    private fun learnTransferWalk(reachAt: Long) {
+        if (restored || legIdx == 0 || xferArriveAt == 0L || reachAt <= xferArriveAt) return
+        val s = WalkLearn.transferSample(LocalDate.now().toEpochDay(), WalkLearn.xferKind(legIdx), xferArriveAt, reachAt,
+            TraceLog.recentWindows()) ?: return
+        WalkLearn.record(this, trip.id, s)
+        TraceLog.event("walk_learn", "kind" to s.kind, "dur" to s.durSec, "raw" to (reachAt - xferArriveAt) / 1000,
+            "walk" to s.walkSec, "waited" to s.partial)
+        xferArriveAt = 0L
+    }
+
     /** 最后一段：从下车 / 出站（尾段记录开始）到在终点停下来的那一刻 */
     private fun learnLastWalk(lat: Double, lng: Double) {
         if (restored) return
@@ -2543,7 +2612,7 @@ class CommuteService : Service() {
     /** 换乘段：出站时刻就是下地铁时刻，顺便学这段地铁实际坐了多久 */
     private fun markAlight(at: Long, by: String = "tap") {
         if (alightAt > 0) return
-        alightAt = at; stepSensor(false)
+        alightAt = at; stepSensor(false); xferArriveAt = at
         TraceLog.event("alight_detect", "leg" to legIdx - 1, "by" to by, "at" to at)
         if (!rideLearned && !restored && boardedAt > 0) {
             rideLearned = true

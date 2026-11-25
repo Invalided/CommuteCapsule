@@ -69,6 +69,7 @@ object Decision {
     const val DETOUR = 1.3            // 直线距离到实际路程的系数
     const val AT_STOP_M = 60.0        // 认为已在站台的距离
     const val SAFETY_SEC = 60         // 留给红绿灯和找站台的余量
+    const val COMMITTED_TOLERANCE_SEC = 30   // 已在步行途中：车比剩余步行时间早到 30 秒以内仍视为赶得上
 
     enum class Mode { LEAVE_LATER, LEAVE_NOW, HURRY, AT_STOP, NO_BUS, METRO, CONNECT, CONNECT_MISS }
 
@@ -82,6 +83,7 @@ object Decision {
         val arrivals: List<Arrival>,     // 按 eta 排序；eta<0 表示只知道站数
         val tip: String = "",
         val located: Boolean = true,     // false = 还没拿到位置，walkSec 不可信，别说「已到」
+        val committed: Boolean = false,  // 已在步行前往上车点：walkSec 为剩余步行时间，不再叠加安全余量
     )
 
     data class Advice(
@@ -130,8 +132,11 @@ object Decision {
             return Advice(Mode.NO_BUS, b?.first ?: options.first(), b?.second, options.first().walkSec, 0, head, detail)
         }
 
-        fun ok(p: Pair<Option, Arrival>) =
-            if (p.first.walkSec == 0) p.second.etaSec >= 0 else p.second.etaSec >= p.first.walkSec + SAFETY_SEC
+        fun ok(p: Pair<Option, Arrival>) = when {
+            p.first.walkSec == 0 -> p.second.etaSec >= 0
+            p.first.committed -> p.second.etaSec >= p.first.walkSec - COMMITTED_TOLERANCE_SEC
+            else -> p.second.etaSec >= p.first.walkSec + SAFETY_SEC
+        }
 
         val catchable = known.firstOrNull { ok(it) }
         fun nextAfter(cur: Pair<Option, Arrival>) =
@@ -173,6 +178,10 @@ object Decision {
             return Advice(Mode.AT_STOP, o, a, 0, 0,
                 if (a.etaSec < 60) "进站" else "${mins(a.etaSec)}分",
                 "${o.candidate.label()} ${if (a.etaSec < 60) arriveText(a.etaSec) else "约 " + arriveText(a.etaSec)}$stopsText$nextText", next)
+        }
+        if (o.committed) {
+            return Advice(Mode.LEAVE_NOW, o, a, o.walkSec, 0, "来得及",
+                "${o.candidate.label()} ${arriveText(a.etaSec)}$stopsText · 还需步行约 ${mins(o.walkSec).coerceAtLeast(1)} 分钟$nextText", next)
         }
         val leaveIn = a.etaSec - o.walkSec - SAFETY_SEC
         val base = "${o.candidate.label()} ${arriveText(a.etaSec)}$stopsText · 步行 ${mins(o.walkSec)} 分钟$nextText"

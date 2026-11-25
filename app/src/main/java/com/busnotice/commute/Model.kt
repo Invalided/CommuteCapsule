@@ -84,7 +84,7 @@ data class Candidate(
 data class Leg(
     val candidates: List<Candidate>,
     val rideMin: Int = 10,          // 这段大约坐多久
-    val transferWalkMin: Int = 3,   // 从上一段下车走到这里要多久（第一段忽略）
+    val transferWalkMin: Int = 5,   // 从上一段下车走到这里要多久（第一段忽略）
 ) {
     fun title(): String = candidates.joinToString(" / ") { it.label() }.ifEmpty { "未设置" }
     fun stopName(): String = candidates.map { it.stopName }.distinct().joinToString(" / ")
@@ -99,7 +99,7 @@ data class Leg(
             val arr = o.optJSONArray("candidates") ?: JSONArray()
             return Leg(
                 candidates = (0 until arr.length()).map { Candidate.fromJson(arr.getJSONObject(it)) },
-                rideMin = o.optInt("rideMin", 10), transferWalkMin = o.optInt("transferWalkMin", 3),
+                rideMin = o.optInt("rideMin", 10), transferWalkMin = o.optInt("transferWalkMin", 5),
             )
         }
     }

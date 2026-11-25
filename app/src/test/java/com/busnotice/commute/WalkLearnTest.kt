@@ -45,4 +45,24 @@ class WalkLearnTest {
         val fixes = (0..10).map { fix(it * 30_000L, it * 0.0003) }
         assertNull(WalkLearn.build(1, "first", 0, 300_000, fixes, emptyList(), true)?.speed)
     }
+
+    @Test fun transferSampleUsesDurationWhenNoLongStop() {
+        // 到站后 5 分钟走到站牌，其中 4 分钟在走（扶梯、闸机 1 分钟）
+        val wins = (0 until 30).map { still(it * 2_000L) } + (30 until 150).map { walk(it * 2_000L) }
+        val s = WalkLearn.transferSample(1, WalkLearn.xferKind(1), 0, 300_000, wins)
+        assertNotNull(s); assertEquals(300, s!!.durSec); assertTrue(!s.partial)
+    }
+
+    @Test fun transferSampleExcludesWaiting() {
+        // 到站后走 2 分钟，站外停留 12 分钟，再走 4 分钟：取步行 6 分钟 + 60 秒
+        val wins = (0 until 60).map { walk(it * 2_000L) } + (60 until 420).map { still(it * 2_000L) } +
+            (420 until 540).map { walk(it * 2_000L) }
+        val s = WalkLearn.transferSample(1, WalkLearn.xferKind(1), 0, 1_080_000, wins)
+        assertNotNull(s); assertEquals(420, s!!.durSec); assertTrue(s.partial)
+    }
+
+    @Test fun transferSampleRejectsUncoveredLongGap() {
+        val wins = (300 until 540).map { walk(it * 2_000L) }
+        assertNull(WalkLearn.transferSample(1, WalkLearn.xferKind(1), 0, 1_080_000, wins))
+    }
 }

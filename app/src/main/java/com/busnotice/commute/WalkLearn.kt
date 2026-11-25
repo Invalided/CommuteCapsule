@@ -81,6 +81,35 @@ object WalkLearn {
         return Sample(day, kind, dur, path.toInt(), walk, spd?.let { Math.round(it * 100) / 100.0 }, partial)
     }
 
+    fun xferKind(legIdx: Int) = "xfer$legIdx"
+
+    /**
+     * 换乘步行样本：from = 上一段到站，to = 到达本段站牌。
+     * 总时长中非步行部分不超过 3 分钟（扶梯、闸机、红绿灯）时取总时长；
+     * 超过 3 分钟说明中途停留过，若加速度窗口覆盖了整段，则取步行时长 + 60 秒，标记 partial；
+     * 窗口未覆盖起点且总时长超过 10 分钟时无法区分停留，返回 null。
+     */
+    fun transferSample(day: Long, kind: String, from: Long, to: Long, wins: List<AccMotion.Win>): Sample? {
+        val dur = ((to - from) / 1000).toInt()
+        if (dur !in 30..30 * 60) return null
+        val walk = walkSec(wins, from, to)
+        val covered = wins.any { it.t <= from + 30_000L }
+        return when {
+            dur - walk <= 180 -> Sample(day, kind, dur, 0, walk, null, partial = false)
+            covered -> Sample(day, kind, minOf(dur, walk + 60), 0, walk, null, partial = true)
+            dur <= 10 * 60 -> Sample(day, kind, dur, 0, walk, null, partial = false)
+            else -> null
+        }
+    }
+
+    /** 换乘步行建议：至少 3 次样本时返回（建议分钟数, 样本数），否则 null；只用于提示，不改设置 */
+    fun transferSuggestion(ctx: Context, tripId: String, legIdx: Int): Pair<Int, Int>? {
+        val xs = samples(ctx, tripId, xferKind(legIdx)).map { it.durSec.toDouble() }
+        if (xs.size < 3) return null
+        val m = median(xs) ?: return null
+        return ((m + 30) / 60).toInt().coerceAtLeast(1) to xs.size
+    }
+
     fun median(xs: List<Double>): Double? = xs.sorted().takeIf { it.isNotEmpty() }?.let { it[it.size / 2] }
 
     // ---------- 本机存取 ----------

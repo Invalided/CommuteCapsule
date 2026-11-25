@@ -30,6 +30,8 @@ object DepartAdvisor {
     private const val DEFAULT_FIRST_WALK_MIN = 5
     private const val NOTIFY_AHEAD_MIN = 15   // 出发前多久开始提醒
     private const val DEFAULT_HEADWAY_MIN = 15
+    /** 出发计划按往日到站时刻的 20% 分位安排（偏早的一端） */
+    const val EARLY_QUANTILE = 0.2
 
     data class Lead(val firstWalkMin: Int, val beforeMin: Int, val transferWalkMin: Int) {
         val total get() = firstWalkMin + beforeMin + transferWalkMin + BUFFER_MIN
@@ -64,15 +66,18 @@ object DepartAdvisor {
 
     /**
      * 往日到站时刻表：最近 21 天里和今天同类（工作日 / 周末）的日子，这个站这条线记下的到站时刻，
-     * 6 分钟内的归成一班，至少 2 天都出现过才算，取中位数。返回今天对应的毫秒时刻。
+     * 6 分钟内的归成一班，至少 2 天都出现过才算。返回今天对应的毫秒时刻。
+     * quantile 取每班到站时刻的分位数：显示用中位数（0.5）；出发计划用偏早的一端（EARLY_QUANTILE），
+     * 按这班车较早到站的情况安排出发，避免车提前到站时赶不上。
      */
-    fun timetable(minutesByDay: List<List<Double>>, minDays: Int = 2): List<Double> {
+    fun timetable(minutesByDay: List<List<Double>>, minDays: Int = 2, quantile: Double = 0.5): List<Double> {
         val pts = minutesByDay.flatMapIndexed { d, l -> l.map { it to d } }.sortedBy { it.first }
         val out = ArrayList<Double>()
         var cur = ArrayList<Pair<Double, Int>>()
         fun flush() {
             if (cur.map { it.second }.distinct().size >= minDays) {
-                val s = cur.map { it.first }.sorted(); out += s[s.size / 2]
+                val s = cur.map { it.first }.sorted()
+                out += s[(s.size * quantile.coerceIn(0.0, 1.0)).toInt().coerceAtMost(s.size - 1)]
             }
             cur = ArrayList()
         }
@@ -103,7 +108,7 @@ object DepartAdvisor {
                     if (t.toLocalDate() != d) null else t.hour * 60 + t.minute + t.second / 60.0
                 }.takeIf { it.isNotEmpty() }
             }
-            timetable(per).also { ttCache[ck] = System.currentTimeMillis() to it }
+            timetable(per, quantile = EARLY_QUANTILE).also { ttCache[ck] = System.currentTimeMillis() to it }
         }
         val base = today.atStartOfDay(zone).toInstant().toEpochMilli()
         mins.map { base + (it * 60_000L).toLong() }
