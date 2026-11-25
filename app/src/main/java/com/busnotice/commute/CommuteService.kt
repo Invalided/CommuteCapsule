@@ -301,6 +301,10 @@ class CommuteService : Service() {
         if (!screenRegistered) runCatching {
             registerReceiver(screenRx, Health.screenFilter(), RECEIVER_NOT_EXPORTED); screenRegistered = true
         }
+        if (!locRxRegistered) runCatching {
+            registerReceiver(locRx, android.content.IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION), RECEIVER_NOT_EXPORTED); locRxRegistered = true
+        }
+        locBlockedReason = null
         TraceLog.event("dev", "what" to (if (Health.screenOn(this)) "screen_on" else "screen_off"), "plugged" to Health.plugged(this))
         TraceLog.onCell = { snap -> scope.launch(Dispatchers.Main) { runCatching { onCell(snap) }.onFailure { Log.w(TAG, "基站处理失败", it) } } }
         walkFixes.clear(); firstWalkDone = false; userRestarted = restart
@@ -898,7 +902,7 @@ class CommuteService : Service() {
         val v = visual(a, leg, connecting, expectArrive, now).let { v0 ->
             if (tt != null && (v0.countdownTo == null || v0.countdownTo <= now)) v0.copy(countdownTo = tt.atMs) else v0
         }
-        LiveNotifier.update(this, LiveNotifier.build(this, v)); logLive(v)
+        pushLive(v)
         // 换乘中还在地铁上：看板也给站点圆点和站名（和胶囊同一算法）
         val cr = if (connecting && prev?.isMetroOnly() == true && now < expectArrive) metroRoutes[legIdx - 1] else null
         val cp = cr?.let { connectPassed(it, rideMs(legIdx - 1), now) }
@@ -1101,7 +1105,7 @@ class CommuteService : Service() {
         val title = if (p.leaveSec <= 60) "该出发了 · ${c.stopName}" else "还能待 $stay 分钟"
         val v = LiveNotifier.Visual(title, text, short, trip.name,
             countdownTo = now + p.leaveSec * 1000L, metro = true, trackerRes = R.drawable.ic_metro)
-        LiveNotifier.update(this, LiveNotifier.build(this, v)); logLive(v)
+        pushLive(v)
         LiveState.publish(this, LiveSnapshot(
             trip.id, trip.name, legIdx, trip.legs.size, leg.title(), short, text, a.mode, null, v.countdownTo,
         ), deadlineAt)
@@ -1404,7 +1408,7 @@ class CommuteService : Service() {
             if (trip.legs.size > 1) "${trip.name} · 最后一段" else trip.name,
             progress = p, stops = when { bsShow != null -> hops.coerceIn(0, 12); mr != null && arriveAlertedAt == 0L -> mr.hops.coerceIn(0, 12); else -> 0 },
             metro = metro, trackerRes = if (metro) R.drawable.ic_metro else R.drawable.ic_bus, riding = true)
-        LiveNotifier.update(this, LiveNotifier.build(this, v)); logLive(v)
+        pushLive(v)
         // 界面用的站点进度：公交按沿线投影，地铁按已坐时间推算（与上面文字同一算法，只读）
         val stopUi: Pair<Int, Int>? = when {
             mr != null && arriveAlertedAt == 0L -> {
@@ -1503,6 +1507,37 @@ class CommuteService : Service() {
         return LiveNotifier.Visual(title, a.detail, a.headline, sub, countdown, progress, stops,
             urgent = a.mode == Decision.Mode.HURRY, metro = metro,
             trackerRes = icon)
+    }
+
+    /**
+     * 定位不可用的原因；可用时返回 null。
+     * 系统定位开关关闭时，普通应用读到的基站列表同样为空，到站、进站与地铁上车判定全部失效，需显式告知用户。
+     */
+    private fun locBlocked(): String? {
+        val lm = getSystemService(LocationManager::class.java)
+        if (lm != null && !androidx.core.location.LocationManagerCompat.isLocationEnabled(lm)) return "系统定位已关闭"
+        if (androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return "定位权限未授予"
+        return null
+    }
+    private var locBlockedReason: String? = null
+    private var locRxRegistered = false
+    /** 定位开关变化时立即刷新流体云 */
+    private val locRx = object : BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context?, i: Intent?) { scope.launch(Dispatchers.Main) { kick() } }
+    }
+
+    /** 刷新流体云；定位不可用时在胶囊上显式标注，并在状态切换为不可用时弹出一次提醒 */
+    private fun pushLive(v: LiveNotifier.Visual) {
+        val why = locBlocked()
+        if (why != locBlockedReason) {
+            if (why != null || locBlockedReason != null) TraceLog.event(if (why != null) "loc_off" else "loc_on", "why" to (why ?: locBlockedReason))
+            locBlockedReason = why
+            if (why != null) LiveNotifier.alert(this, "$why · 无法判断上车与到站", "打开定位后自动恢复；关闭期间不识别地铁上车、到站与换乘", locSettings = true)
+        }
+        val shown = if (why == null) v else
+            v.copy(title = "$why · ${v.title}", short = "开定位", text = "$why，无法判断上车与到站，请打开定位 · ${v.text}", urgent = true)
+        LiveNotifier.update(this, LiveNotifier.build(this, shown)); logLive(shown)
     }
 
     private var lastLiveKey = ""
@@ -2553,6 +2588,7 @@ class CommuteService : Service() {
     override fun onDestroy() {
         holdCpu(false)
         if (screenRegistered) { runCatching { unregisterReceiver(screenRx) }; screenRegistered = false }
+        if (locRxRegistered) { runCatching { unregisterReceiver(locRx) }; locRxRegistered = false }
         if (!finishing) { Diag.mark(this, "服务被系统停止（非主动结束）"); TraceLog.stop() }
         try { lm?.removeUpdates(listener) } catch (_: Exception) { }
         // 只有自己还是当前实例（或没有更新的实例）时才清内存里的看板，免得旧实例的 onDestroy 把新实例刚设的状态清掉。

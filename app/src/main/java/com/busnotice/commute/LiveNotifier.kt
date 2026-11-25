@@ -159,7 +159,7 @@ object LiveNotifier {
     }
 
     /** 需要马上出发 / 换乘紧张时，额外弹一条横幅并震动 */
-    fun alert(ctx: Context, title: String, text: String, metro: Boolean = false, id: Int = ALERT_ID) {
+    fun alert(ctx: Context, title: String, text: String, metro: Boolean = false, id: Int = ALERT_ID, locSettings: Boolean = false) {
         unhide(ctx)
         val popped = pop(ctx, title, text)
         TraceLog.event("alert", "title" to title, "text" to text, "pop" to popped)
@@ -172,7 +172,7 @@ object LiveNotifier {
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setAutoCancel(true)
             .setTimeoutAfter(2 * 60_000L)
-            .setContentIntent(openApp(ctx))
+            .setContentIntent(if (locSettings) locationSettings(ctx) else openApp(ctx))
             // 已经用流体云卡片提醒过了：通知栏这条只留底，不再响/震第二次
             .setSilent(popped)
             .build()
@@ -264,6 +264,12 @@ object LiveNotifier {
 
     private fun openApp(ctx: Context) = PendingIntent.getActivity(
         ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    /** 系统定位设置页 */
+    private fun locationSettings(ctx: Context) = PendingIntent.getActivity(
+        ctx, 8, Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
