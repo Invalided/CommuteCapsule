@@ -31,12 +31,14 @@ class TransitA11y : AccessibilityService() {
         e.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { parts += it }
         val budget = intArrayOf(MAX_NODES)
         e.source?.let { collect(it, 0, parts, budget) }
+        // 落盘只用事件本身与系统窗口的文字；前台 App 的屏幕内容只用于识别，不写入记录
+        val logParts = LinkedHashSet(parts)
         if (!KEYWORDS.containsMatchIn(parts.joinToString(" "))) {
             // 事件本身没带出行字样：再看当前窗口和系统窗口（胶囊、弹窗多在系统窗口里）
             rootInActiveWindow?.let { collect(it, 0, parts, budget) }
             runCatching {
                 windows.filter { it.type == AccessibilityWindowInfo.TYPE_SYSTEM }.forEach { w ->
-                    w.root?.let { collect(it, 0, parts, budget) }
+                    w.root?.let { val sys = LinkedHashSet<String>(); collect(it, 0, sys, budget); parts += sys; logParts += sys }
                 }
             }
         }
@@ -47,7 +49,11 @@ class TransitA11y : AccessibilityService() {
         if (text == lastText && now - lastAt < 30_000) return
         lastText = text; lastAt = now
         // 只记系统界面 / 钱包的文字：别的 App 屏幕内容不落盘（隐私）
-        if (pkg.contains("systemui") || pkg.contains("wallet")) TraceLog.event("a11y", "pkg" to pkg, "text" to text.take(120))
+        // 只记带出行关键词的单条文字（每条最多 60 字），不记整屏内容
+        if (pkg.contains("systemui") || pkg.contains("wallet")) {
+            val kept = logParts.filter { KEYWORDS.containsMatchIn(it) }.joinToString(" | ") { it.replace(Regex("\\s+"), " ").take(60) }
+            if (kept.isNotEmpty()) TraceLog.event("a11y", "pkg" to pkg, "text" to kept.take(160))
+        }
         tapSignal(text, pkg, now)
         BALANCE.find(text)?.groupValues?.get(1)?.toDoubleOrNull()?.let { v ->
             val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)

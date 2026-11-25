@@ -13,6 +13,13 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.Looper
 import android.util.Log
+import com.busnotice.commute.engine.Dist
+import com.busnotice.commute.engine.DistProfile
+import com.busnotice.commute.engine.Fix
+import com.busnotice.commute.engine.KalmanTrack
+import com.busnotice.commute.engine.MetroHmm
+import com.busnotice.commute.engine.MetroLine
+import com.busnotice.commute.engine.Point
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -155,6 +162,12 @@ class CommuteService : Service() {
         private const val ENTER_VETO_NET_M = 3_000.0
         /** 换乘提醒缺少新鲜定位时，等待主动定位的最长时间 */
         private const val XFER_HOLD_MS = 90_000L
+        // 换乘提醒与到站判定的约束参数（沿线 HMM、地面段卡尔曼仅旁路记录，不参与判定）
+        /** 前一段为地面交通时，换乘提醒的地理围栏半径（米）：只在离下一段上车站这么近时提醒。 */
+        private const val SURFACE_FENCE_M = 200.0
+        /** 到站时刻的常识下限：不早于上车后本段典型乘车时长的这一比例。 */
+        private const val MIN_RIDE_FRACTION = 0.7
+        private const val KF_MAX_EXTRAP_MS = 180_000L
         /** 手点「已上车」后 2 分钟内：按钮变「撤销」，再点是撤回不是跳下一段 */
         val undoUntil = MutableStateFlow(0L)
         fun undoActive() = undoUntil.value > System.currentTimeMillis()
@@ -303,6 +316,7 @@ class CommuteService : Service() {
         maxStops.clear(); maxEta.clear()
         manualRun = manual; pendingBoardAt = 0L; pendingBoardLoc = null; boardCommitted = false; riding = false; transferAlerted = false; xferHoldSince = 0L; arriveAlertedAt = 0L
         speeds.clear(); routeHits.clear(); lastGpsFix = null
+        hmm = null; hmmLeg = -1; kf = null; kfLeg = -1; kfLoggedAt = 0L
         resetBusRide(); busRoute = null; busRouteLine = ""
         power = null; highSince = 0L; coolUntil = 0L
         setPower(Power.HIGH) // 预热：先拿到一个准的位置
@@ -722,7 +736,7 @@ class CommuteService : Service() {
         // 不使用「上车时刻 + 平均乘车时长」：上车时刻由倒推得出，常包含站台候车时间，会偏早 2–3 分钟
         val fpArrive = if (prev?.isMetroOnly() == true && fpEtaAt > boardedAt && now < fpEtaAt + 10 * 60_000L) fpEtaAt else 0L
         val expectArrive = if (boardedAt > 0 && prev != null)
-            (fpArrive.takeIf { it > 0 } ?: anchoredArrive(legIdx - 1) ?: (boardedAt + rideMs(legIdx - 1))) else 0L
+            plausibleArrive(legIdx - 1, fpArrive.takeIf { it > 0 } ?: anchoredArrive(legIdx - 1) ?: (boardedAt + rideMs(legIdx - 1))) else 0L
         val fromMetro = prev?.isMetroOnly() == true
         // 判断下了地铁：地理围栏（换乘站附近）+ 移动速度 + 计步，三者配合
         if (fromMetro && expectArrive > 0 && alightAt == 0L) {
@@ -905,20 +919,26 @@ class CommuteService : Service() {
             LiveNotifier.alert(this, "${a.headline} · ${a.option?.candidate?.label() ?: trip.name}", a.detail,
                 metro = a.option?.candidate?.isMetro() == true)
         }
-        // 到换乘点：离下一段上车点 500 米内，或按乘车时间快到了，弹一次
+        // 到换乘点：前一段为地面交通时按地理围栏（SURFACE_FENCE_M）提醒；前一段为地铁时离上车点 500 米内或按到站时刻提醒，弹一次
         // 倒计时只在没有新鲜定位、或定位也说已经不远时才算（实测：离换乘站还有 3.2 公里就按倒计时弹了）
         val tFresh = loc != null && now - loc.time < 120_000 && loc.accuracy < 200
         // 提前量：基站到站时刻准，提前 90 秒（约前一站开出）；只有平均时长时才提前 3 分钟
         val lead = if (fpArrive > 0) 90_000L else 180_000L
-        var timeOk = connecting && now >= expectArrive - lead && !(tFresh && nearest != null && nearest > 800)
-        // 前一段是地面交通、只有平均乘车时长可依：没有新鲜定位时先主动取一次定位，
-        // 最多等 XFER_HOLD_MS 再按时间提醒，避免定位中断时提前数公里提醒。
-        if (timeOk && !tFresh && fpArrive == 0L && prev?.isMetroOnly() == false) {
+        val surfacePrev = prev?.isMetroOnly() == false
+        var timeOk = connecting && expectArrive > 0 && now >= expectArrive - lead && !(tFresh && nearest != null && nearest > 800.0)
+        // 前一段为地面交通：以地理围栏为准。有新鲜定位时只按距离提醒；
+        // 没有新鲜定位时先主动取一次定位，最多等 XFER_HOLD_MS 再按时间兜底，避免定位中断时提前数公里提醒。
+        if (surfacePrev && tFresh) timeOk = false
+        if (timeOk && !tFresh && fpArrive == 0L && surfacePrev) {
             if (xferHoldSince == 0L) { xferHoldSince = now; TraceLog.event("transfer_hold", "leg" to legIdx); freshFix() }
             if (now - xferHoldSince < XFER_HOLD_MS) timeOk = false
         } else if (tFresh) xferHoldSince = 0L
-        if (legIdx > 0 && boardedAt > 0 && !transferAlerted && ((nearest != null && nearest <= 500) || timeOk)) {
-            TraceLog.event("transfer_alert", "nearest" to nearest?.toInt(), "byTime" to timeOk)
+        val fenceM = if (surfacePrev) SURFACE_FENCE_M else 500.0
+        // 卡尔曼只做旁路记录，不参与触发
+        val kfRem = if (surfacePrev) kfRemainingMs(now) else null
+        if (legIdx > 0 && boardedAt > 0 && !transferAlerted && ((nearest != null && nearest <= fenceM) || timeOk)) {
+            TraceLog.event("transfer_alert", "nearest" to nearest?.toInt(), "byTime" to timeOk, "fp" to (fpArrive > 0),
+                "fence" to fenceM.toInt(), "kfRemShadow" to kfRem?.let { it / 1000 })
             transferAlerted = true
             val c = a.option?.candidate
             val at = prev?.candidates?.firstOrNull { it.alightName.isNotEmpty() }?.alightName ?: "换乘站"
@@ -1282,7 +1302,7 @@ class CommuteService : Service() {
             ?: mrRide?.let { metroProgress(it, rideMs(legIdx).coerceAtLeast(60_000L), now).second }
             ?: (boardedAt + rideMs(legIdx))
         // 公交按沿线距离估过到站时间：取两者晚的，免得时间估短了提前结束
-        val eta = if (!metro && busEtaAt > 0) maxOf(timeEta, busEtaAt) else timeEta
+        val eta = plausibleArrive(legIdx, if (!metro && busEtaAt > 0) maxOf(timeEta, busEtaAt) else timeEta)
         // 公交站距常只有 300–500 米，700 米会提前两三站（实测）：公交收到 350 米；地铁仍 700 米
         val freshLoc = loc != null && now - loc.time < 120_000 && loc.accuracy < 200
         val near = d != null && (loc?.accuracy ?: 9999f) < 400 &&
@@ -1693,6 +1713,7 @@ class CommuteService : Service() {
             while (walkFixes.size > 300) walkFixes.removeFirst()
         }
         if (!::trip.isInitialized || riding) return
+        if (!tail) runCatching { kfFeed(loc) }
 
         // 判上车用的速度只信 GPS（精度 ≤30 米、每个定位时刻只算一次）：网络定位常报假速度，出地铁口时尤其多
         val trusted = loc.provider == LocationManager.GPS_PROVIDER && loc.accuracy <= 30f && loc.time != lastSpeedFixT
@@ -2194,6 +2215,10 @@ class CommuteService : Service() {
     private val etaCache = java.util.concurrent.ConcurrentHashMap<String, Map<Long, Long>>()
     private val etaLoading = java.util.Collections.synchronizedSet(HashSet<String>())
 
+    /** 各段地铁的沿线模型（与 E1 同时加载；历史不足时为空，此时沿用 E1）。 */
+    private val lineCache = java.util.concurrent.ConcurrentHashMap<String, MetroLine>()
+    private fun lineFor(legI: Int): MetroLine? = lineCache[trip.id.take(8) + ":" + legI]
+
     private fun etaFor(legI: Int): Map<Long, Long>? {
         val key = trip.id.take(8) + ":" + legI
         etaCache[key]?.let { return it }
@@ -2201,9 +2226,12 @@ class CommuteService : Service() {
             val single = trip.legs.count { it.isMetroOnly() } == 1
             val learner = tacLearner
             scope.launch(Dispatchers.IO) {
-                val m = MetroCells.eta(applicationContext, key, if (single && learner != null) ({ t: Int? -> learner.isMetroTac(t) }) else null)
+                val rides = MetroCells.rides(applicationContext, key, if (single && learner != null) ({ t: Int? -> learner.isMetroTac(t) }) else null)
+                val m = runCatching { MetroEta.build(rides) }.getOrDefault(emptyMap())
+                val line = runCatching { MetroLine.learn(rides) }.getOrNull()
+                line?.let { lineCache[key] = it }
                 etaCache[key] = m
-                withContext(Dispatchers.Main) { TraceLog.event("fp_eta_load", "key" to key, "cells" to m.size) }
+                withContext(Dispatchers.Main) { TraceLog.event("fp_eta_load", "key" to key, "cells" to m.size, "hmm" to (line?.size ?: 0)) }
             }
         }
         return null
@@ -2232,6 +2260,99 @@ class CommuteService : Service() {
         saveRun(deadlineAt); kick()
         return true
     }
+    // ---------- 沿线 HMM（地铁段）与卡尔曼（地面段）：与离线回放引擎 MetroEngine 的同名逻辑保持一致 ----------
+    private var hmm: MetroHmm? = null
+    private var hmmLeg = -1
+    private var hmmDepartLogged = false
+
+    /**
+     * 地铁段（站台候车或车上）每个基站采样喂给 HMM。旁路运行：只记录估计（hmm_shadow），
+     * 不改到站时刻、不判下车、不触发提醒；待真实乘车记录证明其优于规则后再考虑启用。
+     */
+    private fun hmmFeed(s: CellSnap, underground: Boolean) {
+        val inRide = inMetroRide()
+        val platform = !riding && stationAt > 0 && trip.legs[legIdx].isMetroOnly()
+        if (!inRide && !platform) { if (hmm != null && alightAt > 0) hmm = null; return }
+        val legM = if (inRide) (if (riding) legIdx else legIdx - 1) else legIdx
+        etaFor(legM)
+        val line = lineFor(legM) ?: return
+        if (hmm == null || hmmLeg != legM) {
+            hmm = MetroHmm(line).also { it.predict(if (stationAt > 0) stationAt else s.t) }
+            hmmLeg = legM; hmmDepartLogged = false; hmmLoggedEta = 0L
+            TraceLog.event("hmm_start", "leg" to legM, "size" to line.size, "order" to line.order.joinToString(","),
+                "remS" to line.remMs.joinToString(",") { (it / 1000).toString() })
+        }
+        val h = hmm!!
+        if (underground) h.observe(s.t, s.enb?.toLong()) else h.predict(s.t)
+        if (!hmmDepartLogged) h.departEstimate()?.let { hmmDepartLogged = true; TraceLog.event("hmm_depart", "at" to it, "idx" to h.firstMoveIdx) }
+        if (!inRide) return
+        val rem = h.remainingMs(s.t) ?: return
+        val eta = if (h.atTerminal) h.mapSince else s.t + rem
+        if (hmmLoggedEta == 0L || kotlin.math.abs(eta - hmmLoggedEta) >= 30_000L) {
+            hmmLoggedEta = eta
+            TraceLog.event("hmm_shadow", "pos" to h.map, "pMap" to "%.2f".format(h.belief()[h.map]), "pT" to "%.2f".format(h.pTerminal()),
+                "enb" to s.enb, "eta" to eta, "ruleEta" to fpEtaAt)
+        }
+    }
+    private var hmmLoggedEta = 0L
+
+    /** 常识下限：到站时刻不早于「上车 + 本段典型乘车时长 × MIN_RIDE_FRACTION」，防止任何估计把到站判得离谱地早。 */
+    private fun plausibleArrive(leg: Int, eta: Long): Long =
+        if (boardedAt <= 0L) eta else maxOf(eta, boardedAt + (rideMs(leg) * MIN_RIDE_FRACTION).toLong())
+
+    private var kf: KalmanTrack? = null
+    private var kfLeg = -1
+    private var kfLoggedAt = 0L
+    private val profCache = java.util.concurrent.ConcurrentHashMap<String, DistProfile>()
+    private val profLoading = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** 换乘目标点：下一段的地铁站（若有），否则第一个候选站。 */
+    private fun legTarget(i: Int): Point? = trip.legs.getOrNull(i)?.candidates?.let { cs ->
+        (cs.firstOrNull { it.isMetro() } ?: cs.firstOrNull())?.let { Point(it.lat, it.lng) }
+    }
+
+    /** 地面段「距离 → 剩余时间」曲线（后台读一次历史记录；没有任何一天的记录时返回 null，不启用卡尔曼）。 */
+    private fun profileFor(leg: Int): DistProfile? {
+        val key = trip.id.take(8) + ":" + leg
+        profCache[key]?.let { return it }
+        val target = legTarget(leg) ?: return null
+        if (profLoading.add(key)) {
+            val trip8 = trip.id.take(8)
+            scope.launch(Dispatchers.IO) {
+                val p = SurfaceProfiles.load(applicationContext, trip8, leg - 1, target)
+                p?.let { profCache[key] = it }
+                withContext(Dispatchers.Main) { TraceLog.event("kf_profile_load", "key" to key, "ok" to (p != null)) }
+            }
+        }
+        return null
+    }
+
+    /** 地面段乘车中（已上车、下一段有上车点）把定位喂给卡尔曼。 */
+    private fun kfFeed(loc: Location) {
+        if (riding || legIdx == 0 || boardedAt == 0L || alightAt > 0 || trip.legs[legIdx - 1].isMetroOnly() || loc.time <= boardedAt) return
+        if (profileFor(legIdx) == null) return
+        val target = legTarget(legIdx) ?: return
+        if (kf == null || kfLeg != legIdx) { kf = KalmanTrack(target); kfLeg = legIdx }
+        if (loc.accuracy > 500) return
+        val f = Fix(System.currentTimeMillis(), loc.time, loc.latitude, loc.longitude, loc.accuracy,
+            loc.provider == LocationManager.GPS_PROVIDER, if (loc.hasSpeed()) loc.speed else null)
+        val k = kf!!
+        val r = k.onFix(f) ?: return
+        if (!r) TraceLog.event("kf_reject", "acc" to f.accuracy.toInt(), "gps" to f.gps, "z" to Dist.m(f, target).toInt(), "pred" to k.predictD(f.time).toInt())
+        else if (f.time - kfLoggedAt >= 30_000L) {
+            kfLoggedAt = f.time
+            TraceLog.event("kf", "d" to k.d.toInt(), "v" to "%.1f".format(k.v), "sd" to k.sigmaD().toInt(), "z" to Dist.m(f, target).toInt(), "gps" to f.gps)
+        }
+    }
+
+    /** 卡尔曼估计的到换乘点剩余时间（毫秒）；未就绪或外推过久时返回 null。 */
+    private fun kfRemainingMs(now: Long): Long? {
+        val k = kf ?: return null
+        if (kfLeg != legIdx || !k.ready || now - k.lastAcceptAt > KF_MAX_EXTRAP_MS) return null
+        val d = k.predictD(now)
+        return profileFor(legIdx)?.remainingMs(d) ?: (d / k.v.coerceIn(2.0, 20.0) * 1000).toLong()
+    }
+
     /** E1：按基站学到的预计到下车站时刻（0 = 没有） */
     private var fpEtaAt = 0L
     private var metroRideOn = false
@@ -2275,6 +2396,7 @@ class CommuteService : Service() {
         // 只看有 5G 区号的采样：地下掉到只有 4G 时没有区号，不能当成到了地面
         if (s.nrTac != null) { if (underground) { lastUgAt = s.t; surfaceSince = 0L } else if (surfaceSince == 0L) surfaceSince = s.t }
         if (!inMetroRide()) joinByCell(s, underground)
+        hmmFeed(s, underground)
         val inRide = inMetroRide()
         if (inRide) {
             val legM = if (riding) legIdx else legIdx - 1

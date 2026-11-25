@@ -32,7 +32,7 @@ object TapPopup {
     }
 
     private fun ctx(text: String, r: IntRange): String =
-        text.substring(maxOf(0, r.first - 40), minOf(text.length, r.last + 41))
+        text.substring(maxOf(0, r.first - 12), minOf(text.length, r.last + 13))
 
     /** 认出来的刷卡；旧记录 / 没有刷卡字样返回 null */
     fun read(text: String): Hit? {

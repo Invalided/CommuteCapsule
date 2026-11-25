@@ -211,7 +211,11 @@ object MetroCells {
      * [isMetroTac] 不为空（这趟行程只有一段地铁）时，再从每天的行程记录里补：只取连着地铁地下区号的基站，
      * 未打地铁标记的历史记录也可据此使用。
      */
-    fun eta(ctx: Context, key: String, isMetroTac: ((Int?) -> Boolean)? = null): Map<Long, Long> = runCatching {
+    fun eta(ctx: Context, key: String, isMetroTac: ((Int?) -> Boolean)? = null): Map<Long, Long> =
+        runCatching { MetroEta.build(rides(ctx, key, isMetroTac)) }.getOrDefault(emptyMap())
+
+    /** 这一段历次乘车的地下基站序列（本机存档 + 行程记录补充），供 E1 与沿线 HMM 学习。 */
+    fun rides(ctx: Context, key: String, isMetroTac: ((Int?) -> Boolean)? = null): List<List<Pair<Long, Long>>> = runCatching {
         val rides = ArrayList<List<Pair<Long, Long>>>()
         val days = HashSet<String>()
         val f = fpFile(ctx)
@@ -221,8 +225,8 @@ object MetroCells {
             }
         }
         if (isMetroTac != null) rides += fromTraces(ctx, key.substringBefore(':'), isMetroTac, days)
-        MetroEta.build(rides)
-    }.getOrDefault(emptyMap())
+        rides
+    }.getOrDefault(emptyList())
 
     /** 从 traces/日期_行程.jsonl 里抽出每天这趟地铁的地下基站序列（今天的不算，可能还没坐完） */
     fun fromTraces(ctx: Context, trip8: String, isMetroTac: (Int?) -> Boolean, skipDays: Set<String>): List<List<Pair<Long, Long>>> {
