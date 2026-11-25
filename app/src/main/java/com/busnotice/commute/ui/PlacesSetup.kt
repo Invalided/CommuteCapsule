@@ -15,7 +15,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -23,9 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.busnotice.commute.Loc
 import com.busnotice.commute.Places
-import kotlinx.coroutines.launch
 
 /**
  * 家和公司：可以用当前位置手动设置，也可以交给 App 自己学（约 3 天）。
@@ -53,8 +50,14 @@ fun PlacesSetup(modifier: Modifier = Modifier) {
 private fun PlaceRow(kind: Places.Kind, name: String, ver: Int, onChanged: () -> Unit) {
     val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
-    val scope = rememberCoroutineScope()
-    var locating by remember { mutableStateOf(false) }
+    val locate = rememberLocateAction { l ->
+        if (l.accuracy > 200f) Toast.makeText(ctx, "定位误差较大（约 ${l.accuracy.toInt()} 米），稍后再试", Toast.LENGTH_SHORT).show()
+        else {
+            Places.setManual(ctx, kind, l.latitude, l.longitude)
+            Toast.makeText(ctx, "已把当前位置设为$name", Toast.LENGTH_SHORT).show()
+            onChanged()
+        }
+    }
     val manual = remember(ver) { Places.manual(ctx, kind) != null }
     val learned = remember(ver) { runCatching { Places.learned(ctx, kind) != null }.getOrDefault(false) }
     val progress = remember(ver) { runCatching { Places.progressOf(ctx, kind) }.getOrDefault(0) }
@@ -73,21 +76,9 @@ private fun PlaceRow(kind: Places.Kind, name: String, ver: Int, onChanged: () ->
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PillButton(secondary = manual, onClick = {
-                if (locating) return@PillButton
-                locating = true
-                scope.launch {
-                    val l = Loc.current(ctx)
-                    locating = false
-                    if (l == null) Toast.makeText(ctx, "定位失败，请确认已允许定位", Toast.LENGTH_SHORT).show()
-                    else if (l.accuracy > 200f) Toast.makeText(ctx, "定位误差较大（约 ${l.accuracy.toInt()} 米），稍后再试", Toast.LENGTH_SHORT).show()
-                    else {
-                        Places.setManual(ctx, kind, l.latitude, l.longitude)
-                        Toast.makeText(ctx, "已把当前位置设为$name", Toast.LENGTH_SHORT).show()
-                        onChanged()
-                    }
-                }
-            }) { Text(if (locating) "定位中…" else if (manual) "重新设为当前位置" else "我现在在$name") }
+            PillButton(secondary = manual, onClick = { locate.start() }) {
+                Text(if (locate.busy) "定位中…" else if (manual) "重新设为当前位置" else "我现在在$name")
+            }
             if (manual) PillButton(secondary = true, onClick = { Places.clearManual(ctx, kind); onChanged() }) {
                 Text("改为自动学习")
             }

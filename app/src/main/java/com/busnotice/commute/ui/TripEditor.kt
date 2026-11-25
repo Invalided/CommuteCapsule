@@ -31,7 +31,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.clickable
@@ -48,12 +47,10 @@ import com.busnotice.commute.SubwayDir
 import com.busnotice.commute.Learn
 import com.busnotice.commute.WalkLearn
 import com.busnotice.commute.MetroRoutes
-import com.busnotice.commute.Loc
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.LaunchedEffect
 import com.busnotice.commute.R
-import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -82,8 +79,15 @@ fun TripEditor(
 ) {
     val ctx = LocalContext.current
     var pickTime by remember { mutableStateOf<Int?>(null) } // 0=开始 1=结束
-    var locating by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    // 「离开出发地才弹」和「把我现在的位置设为出发地」各自取当前位置
+    val leaveLocate = rememberLocateAction("定位信号弱，到出发地再试") { l ->
+        onChange(trip.copy(leaveLat = l.latitude, leaveLng = l.longitude, leaveRadiusM = 300))
+    }
+    val originLocate = rememberLocateAction { l ->
+        onChange(trip.copy(leaveLat = l.latitude, leaveLng = l.longitude))
+        Toast.makeText(ctx, "已把这里设为出发地", Toast.LENGTH_SHORT).show()
+    }
+    val locating = leaveLocate.busy || originLocate.busy
 
     fun updateLeg(i: Int, leg: Leg) = onChange(trip.copy(legs = trip.legs.toMutableList().also { it[i] = leg }))
 
@@ -140,14 +144,7 @@ fun TripEditor(
                             label = "到点就弹")
                         GlassChip(selected = trip.leaveMode(), onClick = {
                             if (!trip.leaveLat.isNaN()) onChange(trip.copy(leaveRadiusM = trip.leaveRadiusM.takeIf { it > 0 } ?: 300))
-                            else if (!locating) {
-                                locating = true
-                                scope.launch {
-                                    val l = Loc.current(ctx); locating = false
-                                    if (l == null) Toast.makeText(ctx, "定位失败，到出发地再试", Toast.LENGTH_SHORT).show()
-                                    else onChange(trip.copy(leaveLat = l.latitude, leaveLng = l.longitude, leaveRadiusM = 300))
-                                }
-                            }
+                            else if (!locating) leaveLocate.start()
                         }, label = if (locating) "定位中…" else "离开出发地才弹")
                     }
                     Spacer(Modifier.height(8.dp))
@@ -163,14 +160,7 @@ fun TripEditor(
                         }
                         Spacer(Modifier.height(10.dp))
                         PillButton(secondary = true, onClick = {
-                            if (!locating) {
-                                locating = true
-                                scope.launch {
-                                    val l = Loc.current(ctx); locating = false
-                                    if (l == null) Toast.makeText(ctx, "定位失败", Toast.LENGTH_SHORT).show()
-                                    else { onChange(trip.copy(leaveLat = l.latitude, leaveLng = l.longitude)); Toast.makeText(ctx, "已把这里设为出发地", Toast.LENGTH_SHORT).show() }
-                                }
-                            }
+                            if (!locating) originLocate.start()
                         }) { Text("把我现在的位置设为出发地") }
                     } else {
                         Text("下班时间不固定的话，选「离开出发地才弹」，在公司里设一次就行。也可以在下拉快捷开关里加「通勤胶囊」，出门点一下。",

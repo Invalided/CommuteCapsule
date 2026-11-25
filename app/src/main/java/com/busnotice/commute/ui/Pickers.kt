@@ -589,13 +589,14 @@ private val TIME_RE = Regex("(\\d{1,2})\\s*[:：.]\\s*(\\d{2})")
 @Composable
 fun ShuttleEditor(initial: Candidate?, onBack: () -> Unit, onDone: (Candidate) -> Unit) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf(initial?.name ?: "通勤车") }
     var stopName by remember { mutableStateOf(initial?.stopName ?: "") }
     var lat by remember { mutableStateOf(initial?.lat) }
     var lng by remember { mutableStateOf(initial?.lng) }
     var times by remember { mutableStateOf(initial?.departures?.sorted()?.joinToString(" ") { hhmm(it) } ?: "") }
-    var locating by remember { mutableStateOf(false) }
+    val locate = rememberLocateAction { l ->
+        lat = l.latitude; lng = l.longitude; if (stopName.isEmpty()) stopName = "通勤车上车点"
+    }
     var query by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<List<SearchStation>?>(null) }
     var pickDep by remember { mutableStateOf(false) }
@@ -650,17 +651,9 @@ fun ShuttleEditor(initial: Candidate?, onBack: () -> Unit, onDone: (Candidate) -
                     fontSize = 15.sp, color = Fuse.ink(dark),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    PillButton(secondary = true, onClick = {
-                        if (!locating) {
-                            locating = true
-                            scope.launch {
-                                val l = Loc.current(ctx)
-                                locating = false
-                                if (l == null) Toast.makeText(ctx, "定位失败", Toast.LENGTH_SHORT).show()
-                                else { lat = l.latitude; lng = l.longitude; if (stopName.isEmpty()) stopName = "通勤车上车点" }
-                            }
-                        }
-                    }) { Text(if (locating) "定位中…" else "用我现在的位置") }
+                    PillButton(secondary = true, onClick = { locate.start() }) {
+                        Text(if (locate.busy) "定位中…" else "用我现在的位置")
+                    }
                 }
                 GlassField(stopName, { stopName = it }, label = "上车点名称", singleLine = true,
                     modifier = Modifier.fillMaxWidth())
