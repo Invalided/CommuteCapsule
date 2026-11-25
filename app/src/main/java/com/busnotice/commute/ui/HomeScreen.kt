@@ -3,15 +3,7 @@
 package com.busnotice.commute.ui
 
 import android.Manifest
-import android.app.AlarmManager
-import android.app.NotificationManager
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
-import android.os.PowerManager
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -97,14 +89,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 一项设置检查：granted = 已满足；optional = 可选项（不算「还差」） */
-private data class Perm(
-    val title: String, val desc: String, val granted: Boolean, val optional: Boolean = false, val action: () -> Unit,
-)
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit, onSettings: () -> Unit = {}) {
+fun HomeScreen(
+    resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit, onSettings: () -> Unit = {}, onKeepalive: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
     val ink = Fuse.ink(dark)
@@ -144,6 +133,7 @@ fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit, onSet
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { version++ }
     val perms = remember(resumeTick, version) { permChecks(ctx) { p -> permLauncher.launch(p) } }
     val days = remember(resumeTick) { com.busnotice.commute.TraceLog.dayCount(ctx) }
+    val keepalive = remember(resumeTick) { com.busnotice.commute.Keepalive.brandProgress(ctx) }
     val diag = remember(resumeTick, version) { com.busnotice.commute.Diag.last(ctx) }
 
     // 进程重启后内存里的看板是空的：先用本地存的那份顶上；还没有的话显示「正在恢复…」，30 秒后服务还没起来就不再显示
@@ -358,6 +348,10 @@ fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit, onSet
                     )
                 }
                 if (!permUrgent && perms.isNotEmpty()) item(key = "perm") { PermRow(perms, dark) { permSheet = true } }
+                // 手机厂商的后台设置还没全部勾选：一直在列表末尾提示，点进体检页
+                if (!demoOn && keepalive.first < keepalive.second) item(key = "keepalive") {
+                    KeepaliveRow(keepalive.first, keepalive.second, dark, onKeepalive)
+                }
             }
         }
     }
@@ -459,6 +453,22 @@ private fun PlaceChip(text: String, dark: Boolean) {
         Box(Modifier.size(6.dp).clip(CircleShape).background(if (text.startsWith("常去")) Fuse.dim(dark) else Fuse.BusGreen))
         Spacer(Modifier.width(6.dp))
         Text(text, fontSize = 12.sp, color = Fuse.ink(dark), style = TextStyle(fontFeatureSettings = "tnum"))
+    }
+}
+
+/** 后台保活体检一行：「后台保活体检  N / M ›」 */
+@Composable
+private fun KeepaliveRow(done: Int, total: Int, dark: Boolean, onOpen: () -> Unit) {
+    val ink = Fuse.ink(dark)
+    Row(
+        Modifier.fillMaxWidth().glass(dark).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("后台保活体检", fontSize = 14.sp, color = ink)
+            Text("手机厂商的后台设置，影响提醒是否准时", fontSize = 12.sp, color = Fuse.dim(dark))
+        }
+        Text("$done / $total ›", fontSize = 14.sp, color = ink, style = TextStyle(fontFeatureSettings = "tnum"))
     }
 }
 
@@ -632,55 +642,6 @@ private fun RouteRow(trip: Trip, dark: Boolean, modifier: Modifier = Modifier) {
         Dash()
         Walk()
     }
-}
-
-private fun granted(ctx: Context, p: String) = ctx.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
-
-/** 全部设置检查（含已满足项），申请方式与引导流程相同 */
-private fun permChecks(ctx: Context, request: (Array<String>) -> Unit): List<Perm> {
-    val out = mutableListOf<Perm>()
-    val pkg = Uri.parse("package:${ctx.packageName}")
-    fun open(i: Intent) = runCatching { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-        .recover { ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-
-    val fine = granted(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
-    out += Perm("精确定位", "算你走到车站要多久", fine) {
-        request(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-    }
-    out += Perm("后台定位：始终允许", "闹钟在后台叫醒时也能定位", fine && granted(ctx, Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
-        // 系统要求先有前台定位才能申请后台定位
-        if (!granted(ctx, Manifest.permission.ACCESS_FINE_LOCATION))
-            request(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-        else request(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION))
-    }
-    out += Perm("身体活动（计步）", "判断你下了地铁、开始走路", granted(ctx, Manifest.permission.ACTIVITY_RECOGNITION)) {
-        request(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION))
-    }
-    val notif = granted(ctx, Manifest.permission.POST_NOTIFICATIONS)
-    out += Perm("通知", "显示流体云胶囊", notif) { request(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) }
-    if (Build.VERSION.SDK_INT >= 36) {
-        val promoted = notif && ctx.getSystemService(NotificationManager::class.java).canPostPromotedNotifications()
-        out += Perm("实时通知 / 流体云", "让胶囊出现在状态栏", promoted) {
-            if (!granted(ctx, Manifest.permission.POST_NOTIFICATIONS)) request(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
-            else open(Intent("android.settings.APP_NOTIFICATION_PROMOTION_SETTINGS").putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName))
-        }
-    }
-    out += Perm("精确闹钟", "准时预热", ctx.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()) {
-        open(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, pkg))
-    }
-    out += Perm("电池不限制", "也请在 设置→电池 里允许后台活动和自启动",
-        ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)) {
-        open(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg))
-    }
-    out += Perm("通知使用权", "读 NFC 交通卡刷卡和系统到站提醒，进出站时间更准；只看出行通知",
-        com.busnotice.commute.TransitNotif.enabled(ctx), optional = true) {
-        open(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-    }
-    out += Perm("出行识别", "无障碍：行程中读系统出行胶囊、交通卡弹窗的文字，只记在本机",
-        com.busnotice.commute.TransitA11y.enabled(ctx), optional = true) {
-        open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-    }
-    return out
 }
 
 /** 下班出发建议：「约 8 分钟后出发」+ 几点走、接哪班车；错过了会写「错过 18:47 那班」 */

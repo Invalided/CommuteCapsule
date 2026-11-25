@@ -181,6 +181,9 @@ object Transit {
         synchronized(this) { if (inited) applySources() }
     }
 
+    /** 用户是否明确选择过数据方式（首次引导据此决定默认选项） */
+    fun modeChosen(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(KEY_MODE)
+
     /** 接入了扩展数据源（演示 / 边用边学的选择不起作用） */
     val hasExtraSource get() = extraStatic != null
 

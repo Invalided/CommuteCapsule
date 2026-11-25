@@ -21,16 +21,21 @@ sealed interface Screen {
     data class PickMetro(val legIndex: Int) : Screen
     data class EditShuttle(val legIndex: Int, val candidateIndex: Int) : Screen
     data object Settings : Screen
+    data object Onboarding : Screen
+    data class Keepalive(val fromSettings: Boolean) : Screen
 }
 
 @Composable
 fun App(resumeTick: Int) {
-    var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+    val ctx = LocalContext.current
+    // 首次启动进引导（升级上来的老用户不弹）
+    var screen by remember { mutableStateOf<Screen>(if (OnboardingState.needed(ctx)) Screen.Onboarding else Screen.Home) }
     var draft by remember { mutableStateOf(Trip()) }
+    // 选线路页返回到哪：编辑页，或首次引导里的「第一条行程」
+    var pickerReturn by remember { mutableStateOf<Screen>(Screen.Edit) }
     // 进入编辑页时的行程：用来判断返回时有没有未保存的改动
     var baseline by remember { mutableStateOf<Trip?>(null) }
     var confirmLeave by remember { mutableStateOf(false) }
-    val ctx = LocalContext.current
 
     fun openEditor(t: Trip) { draft = t; baseline = t; screen = Screen.Edit }
     fun leaveEditor() {
@@ -44,25 +49,49 @@ fun App(resumeTick: Int) {
         if (replaceAt in cands.indices) cands[replaceAt] = c else cands += c
         legs[legIndex] = legs[legIndex].copy(candidates = cands)
         draft = draft.copy(legs = legs)
-        screen = Screen.Edit
+        screen = pickerReturn
     }
 
-    BackHandler(enabled = screen != Screen.Home) {
-        when (screen) {
+    // 首次引导自己处理返回（欢迎页按返回直接退出 App）
+    BackHandler(enabled = screen != Screen.Home && screen != Screen.Onboarding) {
+        when (val s = screen) {
             Screen.Edit -> leaveEditor()
             Screen.Settings -> screen = Screen.Home
-            else -> screen = Screen.Edit
+            is Screen.Keepalive -> screen = if (s.fromSettings) Screen.Settings else Screen.Home
+            else -> screen = pickerReturn
         }
     }
 
     when (val s = screen) {
         Screen.Home -> HomeScreen(
             resumeTick = resumeTick,
-            onNew = { openEditor(Trip(legs = listOf(Leg(emptyList())))) },
-            onEdit = { openEditor(it) },
+            onNew = { pickerReturn = Screen.Edit; openEditor(Trip(legs = listOf(Leg(emptyList())))) },
+            onEdit = { pickerReturn = Screen.Edit; openEditor(it) },
             onSettings = { screen = Screen.Settings },
+            onKeepalive = { screen = Screen.Keepalive(fromSettings = false) },
         )
-        Screen.Settings -> SettingsScreen(onBack = { screen = Screen.Home })
+        Screen.Settings -> SettingsScreen(
+            onBack = { screen = Screen.Home },
+            onKeepalive = { screen = Screen.Keepalive(fromSettings = true) },
+            onOnboarding = { OnboardingState.restart(ctx); draft = Trip(); screen = Screen.Onboarding },
+        )
+        is Screen.Keepalive -> KeepaliveScreen(resumeTick) {
+            screen = if (s.fromSettings) Screen.Settings else Screen.Home
+        }
+        Screen.Onboarding -> Onboarding(
+            resumeTick = resumeTick,
+            draft = draft,
+            onDraftChange = { draft = it },
+            onAddLine = { leg, kind ->
+                pickerReturn = Screen.Onboarding
+                screen = when (kind) {
+                    LineKind.BUS -> Screen.PickBus(leg)
+                    LineKind.METRO -> Screen.PickMetro(leg)
+                    LineKind.SHUTTLE -> Screen.EditShuttle(leg, -1)
+                }
+            },
+            onFinish = { pickerReturn = Screen.Edit; draft = Trip(); screen = Screen.Home },
+        )
         Screen.Edit -> TripEditor(
             trip = draft,
             onChange = { draft = it },
@@ -73,16 +102,16 @@ fun App(resumeTick: Int) {
             onEditShuttle = { leg, idx -> screen = Screen.EditShuttle(leg, idx) },
         )
         is Screen.PickBus -> BusPicker(
-            onBack = { screen = Screen.Edit },
+            onBack = { screen = pickerReturn },
             onPicked = { addCandidate(s.legIndex, it) },
         )
         is Screen.PickMetro -> MetroPicker(
-            onBack = { screen = Screen.Edit },
+            onBack = { screen = pickerReturn },
             onPicked = { addCandidate(s.legIndex, it) },
         )
         is Screen.EditShuttle -> ShuttleEditor(
             initial = draft.legs.getOrNull(s.legIndex)?.candidates?.getOrNull(s.candidateIndex),
-            onBack = { screen = Screen.Edit },
+            onBack = { screen = pickerReturn },
             onDone = { addCandidate(s.legIndex, it, s.candidateIndex) },
         )
     }
