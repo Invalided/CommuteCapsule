@@ -58,7 +58,7 @@ object GeoWatch {
     }
 
     private fun stops(trip: Trip) = trip.legs.firstOrNull()?.candidates.orEmpty()
-        .filter { !it.lat.isNaN() && !it.lng.isNaN() }
+        .filter { it.hasCoord() }   // 直接记下的上车点没有坐标，不注册围栏
         .distinctBy { "%.4f,%.4f".format(it.lat, it.lng) }.take(3)
 
     /** 触发的上车站是否靠近已确认的家/公司（idx 未知时检查全部上车站） */

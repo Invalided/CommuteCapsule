@@ -376,8 +376,9 @@ private fun LegCard(
             val metro = leg.candidates.firstOrNull { it.isMetro() }.takeIf { leg.isMetroOnly() }
             val ctx = LocalContext.current
             val target = metro?.let {
-                if (!it.alightLat.isNaN()) Triple(it.alightName.ifEmpty { "下车站" }, it.alightLat, it.alightLng)
-                else nextStop?.let { n -> Triple(it.alightName.ifEmpty { n.stopName }, n.lat, n.lng) }
+                if (!it.hasCoord()) null
+                else if (!it.alightLat.isNaN()) Triple(it.alightName.ifEmpty { "下车站" }, it.alightLat, it.alightLng)
+                else nextStop?.takeIf { n -> n.hasCoord() }?.let { n -> Triple(it.alightName.ifEmpty { n.stopName }, n.lat, n.lng) }
             }
             var route by remember(metro, target) { mutableStateOf<MetroRoute?>(null) }
             LaunchedEffect(metro, target) {

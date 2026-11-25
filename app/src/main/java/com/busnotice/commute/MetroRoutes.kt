@@ -13,7 +13,8 @@ object MetroRoutes {
     fun target(t: Trip, i: Int): Triple<String, Double, Double>? {
         val c = t.legs[i].candidates.firstOrNull { it.isMetro() } ?: return null
         if (!c.alightLat.isNaN()) return Triple(c.alightName.ifEmpty { "下车站" }, c.alightLat, c.alightLng)
-        val n = t.legs.getOrNull(i + 1)?.candidates?.firstOrNull() ?: return null
+        // 下一段上车点没有坐标（直接记下的）时查不了途经站
+        val n = t.legs.getOrNull(i + 1)?.candidates?.firstOrNull()?.takeIf { it.hasCoord() } ?: return null
         return Triple(c.alightName.ifEmpty { n.stopName }, n.lat, n.lng)
     }
 

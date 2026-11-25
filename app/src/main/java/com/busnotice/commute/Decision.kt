@@ -128,7 +128,8 @@ object Decision {
                 tip.isNotEmpty() -> tip
                 else -> "暂无车辆信息"
             }
-            val head = if (b != null && b.second.stopsAway >= 0) (if (b.second.stopsAway == 0) "已到站" else "${b.second.stopsAway}站") else "无车"
+            val head = if (b != null && b.second.stopsAway >= 0) (if (b.second.stopsAway == 0) "已到站" else "${b.second.stopsAway}站")
+                else if (tip == LEARNING_TIP) "学习中" else "无车"
             return Advice(Mode.NO_BUS, b?.first ?: options.first(), b?.second, options.first().walkSec, 0, head, detail)
         }
 
@@ -257,6 +258,9 @@ object Decision {
         val oo = catchable?.first ?: o
         val head = mins?.let { if (it <= 1) "进站" else if (est || next == null) "约${it}分" else "${it}分" }
         return when {
+            // 直接记下的地铁站没有坐标：不说「定位中」，说明按时间估算
+            !oo.located && !oo.candidate.hasCoord() -> Advice(Mode.METRO, oo, catchable?.second, 0, 0, head ?: "地铁",
+                "${oo.candidate.stopName} · $LEARNING_TIP$nextText")
             !oo.located -> Advice(Mode.METRO, oo, catchable?.second, 0, 0, head ?: "定位中",
                 "${oo.candidate.stopName}（定位中）$nextText")
             oo.walkSec == 0 -> Advice(Mode.METRO, oo, catchable?.second, 0, 0, head ?: "进站",
@@ -270,6 +274,9 @@ object Decision {
     }
 
     const val END_OF_SERVICE = "末班已过"
+
+    /** 直接记下、没有坐标和实时数据的线路：提示按时间估算，上车点位置靠行程记录学习 */
+    const val LEARNING_TIP = "位置学习中，按时间估算"
     /** 地铁段步行时长上限（秒），超过视为位置不可信 */
     const val METRO_WALK_MAX_SEC = 30 * 60
 

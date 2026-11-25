@@ -28,10 +28,23 @@ data class Candidate(
     // 下车站坐标（WGS-84，用于到站提醒；NaN 表示运行时再查）
     val alightLat: Double = Double.NaN,
     val alightLng: Double = Double.NaN,
+    // 这条线路怎么来的：数据源选中 / 查不到时用户直接记下（lat/lng 为 NaN，位置待学习）
+    val origin: Origin = Origin.SOURCE,
 ) {
     enum class Type { BUS, SHUTTLE, METRO }
+    enum class Origin { SOURCE, MANUAL }
 
     fun isMetro() = type == Type.METRO
+
+    /** 上车点有坐标。直接记下的线路没有坐标：不注册围栏、不按距离判断，按时间推算 */
+    fun hasCoord() = !lat.isNaN() && !lng.isNaN()
+
+    /** 用户直接记下的线路（不来自数据源） */
+    fun isManual() = origin == Origin.MANUAL
+
+    /** 到上车点的直线距离（米）；上车点没有坐标时返回 null */
+    fun distanceFrom(fromLat: Double, fromLng: Double): Double? =
+        if (hasCoord()) Geo.distanceM(fromLat, fromLng, lat, lng) else null
     fun peakHw() = headwayMin.takeIf { it > 0 } ?: 6
     fun offPeakHw() = offPeakHeadwayMin.takeIf { it > 0 } ?: ((peakHw() * 3 + 1) / 2)
 
@@ -41,13 +54,16 @@ data class Candidate(
         Type.METRO -> name.ifEmpty { "地铁" }
     }
 
+    // JSON 不允许 NaN：没有坐标时不写 lat/lng，读回来按 NaN 处理
     fun toJson(): JSONObject = JSONObject()
         .put("type", type.name).put("name", name).put("stopName", stopName)
-        .put("lat", lat).put("lng", lng).put("regionId", regionId).put("lineId", lineId)
+        .apply { if (hasCoord()) put("lat", lat).put("lng", lng) }
+        .put("regionId", regionId).put("lineId", lineId)
         .put("stationId", stationId).put("lastStop", lastStop).put("stopIndex", stopIndex)
         .put("alightName", alightName).put("departures", JSONArray(departures)).put("headwayMin", headwayMin)
         .put("offPeakHeadwayMin", offPeakHeadwayMin).put("metroDir", metroDir)
         .apply { if (!alightLat.isNaN() && !alightLng.isNaN()) put("alightLat", alightLat).put("alightLng", alightLng) }
+        .apply { if (origin != Origin.SOURCE) put("origin", origin.name) }
 
     companion object {
         private val METRO_RE = Regex("^(地铁)?\\s*\\d+\\s*号线|地铁|机场线|城际")
@@ -75,6 +91,7 @@ data class Candidate(
                 headwayMin = o.optInt("headwayMin"),
                 offPeakHeadwayMin = o.optInt("offPeakHeadwayMin"), metroDir = o.optString("metroDir"),
                 alightLat = o.optDouble("alightLat"), alightLng = o.optDouble("alightLng"),
+                origin = runCatching { Origin.valueOf(o.optString("origin")) }.getOrDefault(Origin.SOURCE),
             )
         }
     }
@@ -89,6 +106,9 @@ data class Leg(
     fun title(): String = candidates.joinToString(" / ") { it.label() }.ifEmpty { "未设置" }
     fun stopName(): String = candidates.map { it.stopName }.distinct().joinToString(" / ")
     fun isMetroOnly() = candidates.isNotEmpty() && candidates.all { it.type == Candidate.Type.METRO }
+
+    /** 这段有上车点没有坐标的线路（直接记下的），上车时要记候选上车点 */
+    fun needsStopLearning() = candidates.any { !it.hasCoord() }
 
     fun toJson(): JSONObject = JSONObject()
         .put("candidates", JSONArray().apply { candidates.forEach { put(it.toJson()) } })

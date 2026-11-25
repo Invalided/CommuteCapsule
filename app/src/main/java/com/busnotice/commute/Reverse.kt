@@ -21,7 +21,28 @@ object Reverse {
         return Result(trip, warnings)
     }
 
-    private fun reverseCandidate(c: Candidate, warnings: MutableList<String>): Candidate? = when (c.type) {
+    /**
+     * 直接记下的线路（没有线路编号）：在原下车站上车、原上车站下车，坐标随之对调（通常为空，待学习）。
+     * 地铁先按站名查一次数据源，查到了用数据源的站点。
+     */
+    private fun reverseManual(c: Candidate, warnings: MutableList<String>): Candidate? {
+        if (c.alightName.isEmpty()) { warnings += "${c.label()} 没填下车站，回程请手动添加"; return null }
+        if (c.isMetro()) {
+            val st = runCatching { Transit.search(c.alightName).stations.firstOrNull { it.isSubway && it.name == c.alightName } }.getOrNull()
+            if (st != null) return c.copy(stopName = st.name, lat = st.lat, lng = st.lng, alightName = c.stopName,
+                alightLat = Double.NaN, alightLng = Double.NaN, metroDir = "", origin = Candidate.Origin.SOURCE)
+        }
+        return c.copy(
+            stopName = c.alightName, alightName = c.stopName, lat = c.alightLat, lng = c.alightLng,
+            alightLat = c.lat, alightLng = c.lng, metroDir = "", lastStop = "", stationId = "", stopIndex = -1,
+        )
+    }
+
+    private fun reverseCandidate(c: Candidate, warnings: MutableList<String>): Candidate? =
+        if (c.isManual() && c.lineId.isEmpty() && c.type != Candidate.Type.SHUTTLE) reverseManual(c, warnings)
+        else reverseSourced(c, warnings)
+
+    private fun reverseSourced(c: Candidate, warnings: MutableList<String>): Candidate? = when (c.type) {
         Candidate.Type.SHUTTLE -> { warnings += "${c.label()} 是自定义通勤车，回程请手动添加"; null }
         Candidate.Type.METRO -> {
             if (c.alightName.isEmpty()) { warnings += "${c.label()} 没填下车站，回程请手动添加"; null }
