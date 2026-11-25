@@ -109,6 +109,15 @@ object NoSource : StaticSource {
 object Transit {
     private const val PREFS = "transit"
     private const val KEY_REGION = "region"
+    private const val KEY_MODE = "mode"
+
+    /**
+     * 没有接入扩展数据源时用哪种方式：
+     *  - DEMO：内置的虚构「演示城市」，装上就能把流程走一遍；
+     *  - LEARN：不使用任何数据源，线路和站名由用户直接记下，位置和时刻靠行程记录逐步学习。
+     * 接入了扩展数据源时以扩展数据源为准，这个设置不起作用。
+     */
+    enum class DataMode { DEMO, LEARN }
 
     /** 可选扩展入口（src/extra 里的 object Extras { val sources: List<Any> }），没有就跳过 */
     private const val EXTRAS = "com.busnotice.commute.extra.Extras"
@@ -117,7 +126,11 @@ object Transit {
     @Volatile var realtime: RealtimeSource? = null; private set
     @Volatile var region: String = ""; private set
 
+    @Volatile var mode: DataMode = DataMode.DEMO; private set
+
     @Volatile private var inited = false
+    @Volatile private var extraStatic: StaticSource? = null
+    @Volatile private var extraRealtime: RealtimeSource? = null
 
     /** 给数据源用的 Application Context（读 assets、存缓存等），init 之后可用 */
     lateinit var appContext: Context; private set
@@ -132,12 +145,13 @@ object Transit {
                 k.getMethod("getSources").invoke(k.getField("INSTANCE").get(null)) as List<*>
             }.getOrNull().orEmpty()
             for (o in extras) {
-                if (o is StaticSource && static === NoSource) static = o
-                if (o is RealtimeSource && realtime == null) realtime = o
+                if (o is StaticSource && extraStatic == null) extraStatic = o
+                if (o is RealtimeSource && extraRealtime == null) extraRealtime = o
             }
-            // 什么都没接：用内置的虚构「演示城市」，装上就能把流程走一遍
-            if (static === NoSource) { static = MockSource; if (realtime == null) realtime = MockSource }
             val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            // 没有保存过选择的（含升级用户）按演示数据处理，与之前的行为一致
+            mode = runCatching { DataMode.valueOf(sp.getString(KEY_MODE, null) ?: "") }.getOrDefault(DataMode.DEMO)
+            applySources()
             var r = sp.getString(KEY_REGION, "").orEmpty()
             if (r.isEmpty()) {
                 // 升级迁移：从已保存行程里取区域编号，用户不用重新设置
@@ -151,6 +165,30 @@ object Transit {
             inited = true
         }
     }
+
+    /** 按扩展数据源和用户选择的方式确定当前数据源 */
+    private fun applySources() {
+        val es = extraStatic
+        if (es != null) { static = es; realtime = extraRealtime; return }
+        // 什么都没接：演示方式用内置的虚构「演示城市」，边用边学方式不接任何数据源
+        if (mode == DataMode.DEMO) { static = MockSource; realtime = extraRealtime ?: MockSource }
+        else { static = NoSource; realtime = extraRealtime }
+    }
+
+    fun setMode(ctx: Context, m: DataMode) {
+        mode = m
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_MODE, m.name).apply()
+        synchronized(this) { if (inited) applySources() }
+    }
+
+    /** 接入了扩展数据源（演示 / 边用边学的选择不起作用） */
+    val hasExtraSource get() = extraStatic != null
+
+    /** 当前用的是内置的虚构演示数据 */
+    val usingDemo get() = static === MockSource
+
+    /** 有可以查询的线路和站点数据（演示数据也算） */
+    val hasStaticData get() = static !== NoSource
 
     fun setRegion(ctx: Context, r: String) {
         region = r.trim()

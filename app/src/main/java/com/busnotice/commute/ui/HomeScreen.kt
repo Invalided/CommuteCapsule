@@ -136,6 +136,10 @@ fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit) {
     var menuOpen by remember { mutableStateOf(false) }
     var sourceOpen by remember { mutableStateOf(false) }
     var permSheet by remember { mutableStateOf(false) }
+    // 当前用演示数据时首页提示；切换后立即刷新，点「稍后」后到进程结束前不再显示
+    var dataVer by remember { mutableStateOf(0) }
+    var demoHintLater by remember { mutableStateOf(demoHintDismissed) }
+    val usingDemoData = remember(resumeTick, dataVer, sourceOpen) { com.busnotice.commute.Transit.usingDemo }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { version++ }
     val perms = remember(resumeTick, version) { permChecks(ctx) { p -> permLauncher.launch(p) } }
@@ -259,6 +263,16 @@ fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit) {
                     }
                     if (!demoOn) placeText?.let { PlaceChip(it, dark) }
                   }
+                }
+                if (!demoOn && usingDemoData && !demoHintLater) item(key = "demo-data") {
+                    DemoDataNotice(
+                        dark,
+                        onSwitch = {
+                            com.busnotice.commute.Transit.setMode(ctx, com.busnotice.commute.Transit.DataMode.LEARN); dataVer++
+                            scope.launch { snack.showSnackbar("已切换到边用边学：添加线路时可以直接记下线路名和站名") }
+                        },
+                        onLater = { demoHintLater = true; demoHintDismissed = true },
+                    )
                 }
                 val demoBoard = demo
                 demoCount?.let { n ->
@@ -398,6 +412,34 @@ fun HomeScreen(resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit) {
             },
             dismissButton = { DialogButton("取消", onClick = { confirmDelete = null }) },
         )
+    }
+}
+
+/** 演示数据提示点过「稍后」：只在本次进程内记住，下次打开 App 仍会提示 */
+private var demoHintDismissed = false
+
+/** 当前用的是虚构演示数据：说明搜不到真实线路，并可一键切换到「边用边学」 */
+@Composable
+private fun DemoDataNotice(dark: Boolean, onSwitch: () -> Unit, onLater: () -> Unit) {
+    val ink = Fuse.ink(dark)
+    Column(
+        Modifier.fillMaxWidth().glass(dark)
+            .background(Fuse.Amber.copy(alpha = if (dark) 0.14f else 0.10f))
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(7.dp).clip(CircleShape).background(Fuse.Amber))
+            Spacer(Modifier.width(8.dp))
+            Text("当前是演示数据", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = ink)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text("线路和站点来自虚构的「演示城市」，搜不到你所在城市。切换到「边用边学」后，查不到的线路可以直接记下名字，位置靠行程记录逐步学习。",
+            fontSize = 13.sp, lineHeight = 18.sp, color = Fuse.dim(dark))
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PillButton(onClick = onSwitch) { Text("切换到边用边学") }
+            PillButton(secondary = true, onClick = onLater) { Text("稍后") }
+        }
     }
 }
 
