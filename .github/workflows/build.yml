@@ -54,7 +54,14 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: gradle --no-daemon assembleDebug testDebugUnitTest
+        run: |
+          set -o pipefail
+          gradle --no-daemon assembleDebug testDebugUnitTest 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      # 构建或测试失败时：把编译错误和失败用例单独列出，并写入运行摘要
+      - name: Report build failures
+        if: failure()
+        run: python3 .github/scripts/report_failures.py "$RUNNER_TEMP/build.log" app/build/test-results
 
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk "CommuteCapsule-$VERSION_NAME.apk"
@@ -62,9 +69,14 @@ jobs:
       # 确认数据源模板能编译（不影响上面已经打好的 APK）
       - name: Check example source
         run: |
+          set -o pipefail
           cp -r examples/json-source app/src/extra
-          gradle --no-daemon compileDebugKotlin
+          gradle --no-daemon compileDebugKotlin 2>&1 | tee "$RUNNER_TEMP/example.log"
           rm -rf app/src/extra
+
+      - name: Report example source failures
+        if: failure()
+        run: python3 .github/scripts/report_failures.py "$RUNNER_TEMP/example.log"
 
       - uses: actions/upload-artifact@v4
         with:
