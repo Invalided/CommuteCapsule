@@ -93,15 +93,8 @@ fun TripEditor(
         title = if (TripStore.get(ctx, trip.id) == null) "新建行程" else "编辑行程",
         onBack = onBack,
         actions = {
-            PillButton(onClick = {
-                val legs = trip.legs.filter { it.candidates.isNotEmpty() }
-                if (legs.isEmpty()) {
-                    Toast.makeText(ctx, "至少添加一条线路", Toast.LENGTH_SHORT).show()
-                } else {
-                    val t = trip.copy(legs = legs)
-                    TripStore.upsert(ctx, t); Scheduler.schedule(ctx, t); onSaved()
-                }
-            }, modifier = Modifier.padding(start = 8.dp)) { Text("保存", fontWeight = FontWeight.Bold) }
+            PillButton(onClick = { if (saveTrip(ctx, trip)) onSaved() },
+                modifier = Modifier.padding(start = 8.dp)) { Text("保存", fontWeight = FontWeight.Bold) }
         },
     ) {
             item {
@@ -224,6 +217,27 @@ fun TripEditor(
             },
         )
     }
+}
+
+/** 保存行程（去掉空段）并重排计划；没有任何线路时提示并返回 false */
+fun saveTrip(ctx: android.content.Context, trip: Trip): Boolean {
+    val legs = trip.legs.filter { it.candidates.isNotEmpty() }
+    if (legs.isEmpty()) {
+        Toast.makeText(ctx, "至少添加一条线路", Toast.LENGTH_SHORT).show()
+        return false
+    }
+    val t = trip.copy(legs = legs)
+    TripStore.upsert(ctx, t); Scheduler.schedule(ctx, t)
+    return true
+}
+
+/**
+ * 编辑页离开前是否需要确认：和进入编辑页时相比有改动，
+ * 或是还没保存过、已经添加了线路的行程（如刚生成的回程）。
+ */
+fun draftNeedsConfirm(ctx: android.content.Context, draft: Trip, baseline: Trip?): Boolean {
+    if (baseline != null && draft != baseline) return true
+    return TripStore.get(ctx, draft.id) == null && draft.legs.any { it.candidates.isNotEmpty() }
 }
 
 /** 一个小节 = 一张玻璃卡：小标题 + 内容 */
