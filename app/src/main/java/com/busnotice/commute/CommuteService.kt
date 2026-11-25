@@ -147,6 +147,14 @@ class CommuteService : Service() {
         private const val EXTRA_RESTART = "restart"
         private const val MANUAL_RUN_MS = 30 * 60_000L
         private const val UNDO_MS = 2 * 60_000L
+        /** 否决基站进站所需的 GPS 精度（米） */
+        private const val ENTER_VETO_ACC = 50f
+        /** 进站被否决后，持续停留在地下区号多久即补判进站 */
+        private const val ENTER_RETRY_MS = 2 * 60_000L
+        /** 高精度网络定位否决基站进站的最小距离（米） */
+        private const val ENTER_VETO_NET_M = 3_000.0
+        /** 换乘提醒缺少新鲜定位时，等待主动定位的最长时间 */
+        private const val XFER_HOLD_MS = 90_000L
         /** 手点「已上车」后 2 分钟内：按钮变「撤销」，再点是撤回不是跳下一段 */
         val undoUntil = MutableStateFlow(0L)
         fun undoActive() = undoUntil.value > System.currentTimeMillis()
@@ -210,6 +218,7 @@ class CommuteService : Service() {
     private var manualRun = false
     private var riding = false          // 最后一段已上车，正在去下车站
     private var transferAlerted = false
+    private var xferHoldSince = 0L
     private var arriveAlertedAt = 0L
     @Volatile private var alight: Pair<Double, Double>? = null
     private val metroDirs = java.util.concurrent.ConcurrentHashMap<String, List<SubwayDir>>()
@@ -282,7 +291,7 @@ class CommuteService : Service() {
         TraceLog.event("dev", "what" to (if (Health.screenOn(this)) "screen_on" else "screen_off"), "plugged" to Health.plugged(this))
         TraceLog.onCell = { snap -> scope.launch(Dispatchers.Main) { runCatching { onCell(snap) }.onFailure { Log.w(TAG, "基站处理失败", it) } } }
         walkFixes.clear(); firstWalkDone = false; userRestarted = restart
-        metroGate.reset(); cellExitAt = 0L; lastUgAt = 0L; surfaceSince = 0L; goodGpsAt = 0L; lastLiveKey = ""; if (metroRideOn) fpRec.finish(); metroRideOn = false; busMovingOn = false; tacLearner = null
+        metroGate.reset(); enterVetoAt = 0L; cellExitAt = 0L; lastUgAt = 0L; surfaceSince = 0L; goodGpsAt = 0L; lastLiveKey = ""; if (metroRideOn) fpRec.finish(); metroRideOn = false; busMovingOn = false; tacLearner = null
         stationAt = 0L; metroRideSec.clear(); metroRoutes.clear(); alightAt = 0L; fenceFixes.clear(); stillSince = 0L; lastFastAt = 0L; rideLearned = false; stopAlerted = ""
         stationByTap = false; arriveAnchorAt = 0L; metroAnchorIdx = -1; metroAnchorAt = 0L
         deferredTapAt = 0L; deferredTapKind = null
@@ -292,7 +301,7 @@ class CommuteService : Service() {
         placeStart = null; arrived = false; lastPlace = null; placeSince = 0L; startLabel = null; busHitTimes.clear(); tail = false; tailFixes.clear(); startVoted = false
         legIdx = 0; boardedAt = 0L; nearSince = 0L; fastFixes = 0; alertedKey = null; planDone = false; planAlerted = ""
         maxStops.clear(); maxEta.clear()
-        manualRun = manual; pendingBoardAt = 0L; pendingBoardLoc = null; boardCommitted = false; riding = false; transferAlerted = false; arriveAlertedAt = 0L
+        manualRun = manual; pendingBoardAt = 0L; pendingBoardLoc = null; boardCommitted = false; riding = false; transferAlerted = false; xferHoldSince = 0L; arriveAlertedAt = 0L
         speeds.clear(); routeHits.clear(); lastGpsFix = null
         resetBusRide(); busRoute = null; busRouteLine = ""
         power = null; highSince = 0L; coolUntil = 0L
@@ -552,7 +561,7 @@ class CommuteService : Service() {
         }
         boardedAt = now
         legIdx++
-        nearSince = 0L; fastFixes = 0; alertedKey = null; transferAlerted = false
+        nearSince = 0L; fastFixes = 0; alertedKey = null; transferAlerted = false; xferHoldSince = 0L
         alightAt = 0L; rideLearned = false; stopAlerted = ""; stepSensor(false)
         stationByTap = false; arriveAnchorAt = 0L
         deferredTapAt = 0L; deferredTapKind = null
@@ -901,7 +910,13 @@ class CommuteService : Service() {
         val tFresh = loc != null && now - loc.time < 120_000 && loc.accuracy < 200
         // 提前量：基站到站时刻准，提前 90 秒（约前一站开出）；只有平均时长时才提前 3 分钟
         val lead = if (fpArrive > 0) 90_000L else 180_000L
-        val timeOk = connecting && now >= expectArrive - lead && !(tFresh && nearest != null && nearest > 800)
+        var timeOk = connecting && now >= expectArrive - lead && !(tFresh && nearest != null && nearest > 800)
+        // 前一段是地面交通、只有平均乘车时长可依：没有新鲜定位时先主动取一次定位，
+        // 最多等 XFER_HOLD_MS 再按时间提醒，避免定位中断时提前数公里提醒。
+        if (timeOk && !tFresh && fpArrive == 0L && prev?.isMetroOnly() == false) {
+            if (xferHoldSince == 0L) { xferHoldSince = now; TraceLog.event("transfer_hold", "leg" to legIdx); freshFix() }
+            if (now - xferHoldSince < XFER_HOLD_MS) timeOk = false
+        } else if (tFresh) xferHoldSince = 0L
         if (legIdx > 0 && boardedAt > 0 && !transferAlerted && ((nearest != null && nearest <= 500) || timeOk)) {
             TraceLog.event("transfer_alert", "nearest" to nearest?.toInt(), "byTime" to timeOk)
             transferAlerted = true
@@ -1787,6 +1802,21 @@ class CommuteService : Service() {
     /** 本服务正在跑的行程：主循环还活着才算 */
     fun runningId(): String? = if (::trip.isInitialized && !finishing && !tail && loop?.isActive == true) trip.id else null
 
+    /** 主动取一次当前定位（GPS 与网络各一次），到达后按常规流程处理并刷新 */
+    @SuppressLint("MissingPermission")
+    private fun freshFix() {
+        val m = lm ?: getSystemService(LocationManager::class.java).also { lm = it } ?: return
+        listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER).forEach { pr ->
+            runCatching {
+                if (!m.isProviderEnabled(pr)) return@runCatching
+                m.getCurrentLocation(pr, null, mainExecutor) { l ->
+                    if (l == null || !::trip.isInitialized || finishing) return@getCurrentLocation
+                    onLocation(l); kick()
+                }
+            }
+        }
+    }
+
     /** 打开 App：马上定一次位，按最新位置重算一遍（纠正段落、刷新胶囊） */
     @SuppressLint("MissingPermission")
     fun relocate() {
@@ -1960,6 +1990,10 @@ class CommuteService : Service() {
         val pts = leg.candidates.filter { !it.isMetro() }.mapNotNull { routes[it.lineId] }.flatten()
         return pts.any { Geo.distanceM(loc.latitude, loc.longitude, it.first, it.second) <= 150 + slack }
     }
+
+    /** 定位到第 i 段各进站点的最近距离（米）；没有坐标时返回 null */
+    private fun metroLegDist(loc: Location, i: Int): Double? =
+        trip.legs[i].candidates.filter { !it.lat.isNaN() }.minOfOrNull { Geo.distanceM(loc.latitude, loc.longitude, it.lat, it.lng) }
 
     /** 定位是否在第 i 段地铁的进站点 500 米内 */
     private fun nearMetroLeg(loc: Location, i: Int): Boolean {
@@ -2263,25 +2297,39 @@ class CommuteService : Service() {
         if (busMoving(s.t)) { busMovingOn = true; l.sampleSurface(s) }
         else if (busMovingOn) { busMovingOn = false; l.endSurface(); MetroCells.save(this, l) }
 
-        val edge = metroGate.feed(s) ?: return
+        val edge = metroGate.feed(s)
+        // 进站被否决后仍持续停留在地下区号、且期间没有精确 GPS（人在地面）：补判进站
+        if (edge == null && enterVetoAt > 0 && underground && metroGate.sawMetro) {
+            val cur0 = trip.legs[legIdx]
+            if (!cur0.isMetroOnly() || riding || stationAt > 0) enterVetoAt = 0L
+            else if (s.t - enterVetoAt >= ENTER_RETRY_MS && goodGpsAt < enterVetoAt && !busMoving(s.t))
+                acceptCellEnter(enterVetoAt, s.t, "retry")
+        }
+        if (edge == null) return
         val last = trip.legs.size - 1
         val cur = trip.legs[legIdx]
         when (edge.first) {
             MetroGate.Edge.ENTER -> {
                 // 当前该进地铁站、还没判进站：连上地下区号 = 进站（刷卡来了会用刷卡时刻覆盖）
                 if (!cur.isMetroOnly() || riding || stationAt > 0) return
-                // 有可靠定位且离这段地铁站很远（比如坐公交路过别的地铁站）：不算
-                val fix = best?.takeIf { it.accuracy < 200 && s.t - it.time < 60_000 }
-                if (fix != null && !nearMetroLeg(fix, legIdx)) { TraceLog.event("cell_enter_skip", "leg" to legIdx); return }
-                stationAt = edge.second; stationByTap = false
-                val origin = cur.candidates.firstOrNull { it.isMetro() }
-                if (fix != null && origin != null && Geo.distanceM(fix.latitude, fix.longitude, origin.lat, origin.lng) < 600 + fix.accuracy.coerceAtMost(200f))
-                    originCellLeg = legIdx
-                TraceLog.event("cell_enter", "leg" to legIdx, "origin" to (originCellLeg == legIdx))
-                Diag.mark(this, "连上地铁里的基站，判断已进站")
-                saveRun(deadlineAt); kick()
+                // 否决条件：精确 GPS 显示离这段地铁站很远（比如坐公交路过别的地铁站），
+                // 或高精度网络定位显示远在 ENTER_VETO_NET_M 之外（如已在线路另一端）。
+                // 站内网络定位可偏出 1 公里以上且标称精度偏乐观，一般偏差不作否决依据。
+                val fix = best?.takeIf { s.t - it.time < 60_000 && it.accuracy <= ENTER_VETO_ACC }
+                val far = fix?.let { f ->
+                    if (f.provider == LocationManager.GPS_PROVIDER) !nearMetroLeg(f, legIdx)
+                    else metroLegDist(f, legIdx)?.let { it > ENTER_VETO_NET_M } == true
+                } == true
+                if (busMoving(s.t) || far) {
+                    // 高精度网络定位显示远在线路另一端时不补判；其余情况持续停留在地下后补判
+                    enterVetoAt = if (far && fix?.provider != LocationManager.GPS_PROVIDER) 0L else edge.second
+                    TraceLog.event("cell_enter_skip", "leg" to legIdx, "by" to if (far) fix?.provider else "bus")
+                    return
+                }
+                acceptCellEnter(edge.second, s.t, "edge")
             }
             MetroGate.Edge.EXIT -> {
+                enterVetoAt = 0L
                 if (!inRide) return
                 cellExitAt = edge.second
                 TraceLog.event("cell_exit", "leg" to legIdx, "at" to edge.second)
@@ -2301,6 +2349,22 @@ class CommuteService : Service() {
                 kick()
             }
         }
+    }
+
+    /** 基站判定进站的时刻（被否决时记下，供持续停留后补判；0 = 无） */
+    private var enterVetoAt = 0L
+
+    private fun acceptCellEnter(at: Long, now: Long, how: String) {
+        enterVetoAt = 0L
+        val cur = trip.legs[legIdx]
+        stationAt = at; stationByTap = false
+        val fix = best?.takeIf { it.accuracy < 200 && now - it.time < 60_000 }
+        val origin = cur.candidates.firstOrNull { it.isMetro() }
+        if (fix != null && origin != null && Geo.distanceM(fix.latitude, fix.longitude, origin.lat, origin.lng) < 600 + fix.accuracy.coerceAtMost(200f))
+            originCellLeg = legIdx
+        TraceLog.event("cell_enter", "leg" to legIdx, "origin" to (originCellLeg == legIdx), "how" to how, "at" to at)
+        Diag.mark(this, "连上地铁里的基站，判断已进站")
+        saveRun(deadlineAt); kick()
     }
 
     /** 一趟地铁结束：结算区号学习，存下沿途基站序列 */

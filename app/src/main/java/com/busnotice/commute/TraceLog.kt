@@ -60,6 +60,7 @@ object TraceLog {
     // 磁场 / 气压 2 秒窗口（只记录，暂不参与判断）
     private var mn = 0; private var msum = 0.0; private var msq = 0.0; private var pn = 0; private var psum = 0.0; private var envStart = 0L
     private const val LATENCY_US = 10_000_000   // 允许传感器攒 10 秒再报：息屏 doze 时数据也能到
+    private const val STEP_EVERY_MS = 5_000L   // 累计步数最短记录间隔
 
     // 最近约 15 分钟的窗口，给下车判断用
     private val recent = ArrayDeque<AccMotion.Win>()
@@ -139,8 +140,28 @@ object TraceLog {
         resetEnv()
         if (mag != null) sm?.registerListener(env, mag, SensorManager.SENSOR_DELAY_NORMAL, LATENCY_US, h)
         if (baro != null) sm?.registerListener(env, baro, SensorManager.SENSOR_DELAY_NORMAL, LATENCY_US, h)
+        // 计步芯片累计步数：低功耗，仅记录，供后续出行方式分类与回放评测使用
+        val stepS = if (c.checkSelfPermission(android.Manifest.permission.ACTIVITY_RECOGNITION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED) pick(Sensor.TYPE_STEP_COUNTER) else null
+        stepLastT = 0L; stepLastN = -1f
+        if (stepS != null) sm?.registerListener(stepRec, stepS, SensorManager.SENSOR_DELAY_NORMAL, LATENCY_US, h)
         write("ev", JSONObject().put("e", "sensors").put("mag", mag != null).put("baro", baro != null)
-            .put("lin", s?.type == Sensor.TYPE_LINEAR_ACCELERATION))
+            .put("lin", s?.type == Sensor.TYPE_LINEAR_ACCELERATION).put("step", stepS != null))
+    }
+
+    private var stepLastT = 0L
+    private var stepLastN = -1f
+
+    /** 累计步数：每 STEP_EVERY_MS 至多记录一条（含开机以来累计值与传感器时间） */
+    private val stepRec = object : SensorEventListener {
+        override fun onSensorChanged(e: SensorEvent) {
+            val n = e.values[0]
+            val t = evTime(e.timestamp)
+            if (stepLastN >= 0f && t - stepLastT < STEP_EVERY_MS) return
+            stepLastT = t; stepLastN = n
+            write("step", JSONObject().put("n", n.toLong()).put("ts", t))
+        }
+        override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     }
 
     private fun resetEnv() { mn = 0; msum = 0.0; msq = 0.0; pn = 0; psum = 0.0; envStart = 0L }
@@ -177,6 +198,7 @@ object TraceLog {
         write("ev", JSONObject().put("e", "stop"))
         runCatching { sm?.unregisterListener(accel) }
         runCatching { sm?.unregisterListener(env) }
+        runCatching { sm?.unregisterListener(stepRec) }
         h?.removeCallbacksAndMessages(null)
         thread?.quitSafely(); thread = null; h = null
         runCatching { writer?.close() }; writer = null

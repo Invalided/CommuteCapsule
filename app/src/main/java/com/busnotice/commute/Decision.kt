@@ -252,12 +252,17 @@ object Decision {
                 "${oo.candidate.stopName}（定位中）$nextText")
             oo.walkSec == 0 -> Advice(Mode.METRO, oo, catchable?.second, 0, 0, head ?: "进站",
                 "已到 ${oo.candidate.stopName}$nextText")
+            // 步行超过 METRO_WALK_MAX_SEC 说明定位与行程状态不一致（多为已乘车或定位漂移），不给出步行时长
+            oo.walkSec > METRO_WALK_MAX_SEC -> Advice(Mode.METRO, oo, catchable?.second, 0, 0, head ?: "定位中",
+                "${oo.candidate.stopName}（位置待确认）$nextText")
             else -> Advice(Mode.METRO, oo, catchable?.second, oo.walkSec, 0, head ?: "去地铁",
                 "步行约 ${mins(oo.walkSec).coerceAtLeast(1)} 分钟到 ${oo.candidate.stopName}$nextText")
         }
     }
 
     const val END_OF_SERVICE = "末班已过"
+    /** 地铁段步行时长上限（秒），超过视为位置不可信 */
+    const val METRO_WALK_MAX_SEC = 30 * 60
 
     /** 一个「刚好赶上换乘公交」的出发方案；时间都是距现在的秒数 */
     data class Plan(
