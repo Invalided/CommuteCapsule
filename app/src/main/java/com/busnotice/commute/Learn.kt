@@ -72,34 +72,12 @@ object Learn {
         return Suggestion(start, end, q(0.5), s.size)
     }
 
+    /** 只作建议：时间窗由用户自己决定，程序不会自动修改 */
     fun suggest(ctx: Context, trip: Trip): Suggestion? {
         val e = entries(ctx, trip.id)
         if (e.map { it.day }.distinct().size < MIN_DAYS) return null
         return suggest(e.map { it.minute })?.takeIf { it.start != trip.startMinute || it.end != trip.endMinute }
     }
-
-    /**
-     * 后台无感调整时间窗：样本够了就直接改，不弹建议。
-     * 每次最多挪 30 分钟，避免一两次异常把窗口一下拉走。返回改过的行程或 null。
-     */
-    fun autoAdjust(ctx: Context, trip: Trip): Trip? {
-        val trip = TripStore.get(ctx, trip.id) ?: trip
-        val sg = suggest(ctx, trip) ?: return null
-        fun step(from: Int, to: Int) = from + (to - from).coerceIn(-30, 30)
-        val ns = step(trip.startMinute, sg.start)
-        val ne = step(trip.endMinute, sg.end).coerceAtLeast(ns + 30)
-        if (ns == trip.startMinute && ne == trip.endMinute) return null
-        val nt = trip.copy(startMinute = ns, endMinute = ne)
-        TripStore.upsert(ctx, nt)
-        val t = java.time.LocalDate.now()
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("adj:${trip.id}", "${t.monthValue}/${t.dayOfMonth} 按习惯调整为 %02d:%02d–%02d:%02d"
-                .format(ns / 60, ns % 60, ne / 60, ne % 60)).apply()
-        return nt
-    }
-
-    fun lastAdjust(ctx: Context, tripId: String): String? =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("adj:$tripId", null)
 
     // ---------- 每段实际坐多久（从上车到走近下一段上车点，减掉换乘步行） ----------
     private const val RIDE = "learn_ride2"  // v2：旧样本的上车时刻记早了，作废
