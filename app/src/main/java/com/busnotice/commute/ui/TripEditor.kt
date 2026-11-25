@@ -64,6 +64,7 @@ import com.busnotice.commute.Leg
 import com.busnotice.commute.Scheduler
 import com.busnotice.commute.Trip
 import com.busnotice.commute.TripStore
+import com.busnotice.commute.ManualEntry
 
 private val DAY_NAMES = arrayOf("一", "二", "三", "四", "五", "六", "日")
 
@@ -350,7 +351,7 @@ private fun LegCard(
                                             Candidate.Type.METRO -> (if (c.metroDir.isNotEmpty()) " · 往${c.metroDir}" else "") +
                                                 " · 高峰 ${c.peakHw()} / 平峰 ${c.offPeakHw()} 分钟一班"
                                             else -> ""
-                                        },
+                                        } + (if (c.type != Candidate.Type.SHUTTLE && !c.hasCoord()) " · 位置学习中" else ""),
                                     fontSize = 12.sp, lineHeight = 16.sp, color = dim,
                                 )
                             }
@@ -406,11 +407,15 @@ private fun LegCard(
 fun CandidateDialog(c: Candidate, onDismiss: () -> Unit, onSave: (Candidate) -> Unit) {
     val ctx = LocalContext.current
     var alight by remember { mutableStateOf(c.alightName) }
+    // 直接记下的线路可以改线路名和上车站（没有线路编号和坐标，改名不影响其他数据）
+    val editableNames = c.isManual() && !c.hasCoord()
+    var lineName by remember { mutableStateOf(c.name) }
+    var stopName by remember { mutableStateOf(c.stopName) }
     var peak by remember { mutableStateOf(c.peakHw()) }
     var off by remember { mutableStateOf(c.offPeakHw()) }
     var dir by remember { mutableStateOf(c.metroDir) }
     var dirs by remember { mutableStateOf<List<SubwayDir>>(emptyList()) }
-    if (c.isMetro()) LaunchedEffect(c) {
+    if (c.isMetro() && c.hasCoord()) LaunchedEffect(c) {
         dirs = withContext(Dispatchers.IO) {
             runCatching { Transit.subwayDirs(c.lat, c.lng, c.stopName, c.regionId) }.getOrNull()
         }.orEmpty().filter { Transit.sameLine(c.name, it) }
@@ -423,6 +428,11 @@ fun CandidateDialog(c: Candidate, onDismiss: () -> Unit, onSave: (Candidate) -> 
         title = { Text("${c.label()} · ${c.stopName}") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (editableNames) {
+                    GlassField(lineName, { lineName = it }, label = "线路", singleLine = true, modifier = Modifier.fillMaxWidth())
+                    GlassField(stopName, { stopName = it }, label = "上车站", singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Text("位置学习中：按时间估算，上车点会从行程记录里学习。", fontSize = 12.sp, lineHeight = 17.sp, color = Fuse.dim(dark))
+                }
                 if (c.isMetro()) {
                     if (dirs.isNotEmpty()) {
                         SectionLabel("方向")
@@ -435,7 +445,8 @@ fun CandidateDialog(c: Candidate, onDismiss: () -> Unit, onSave: (Candidate) -> 
                     Stepper("高峰几分钟一班", peak, 1, 30) { peak = it }
                     Stepper("平峰几分钟一班", off, 1, 30) { off = it }
                 }
-                GlassField(alight, { alight = it }, label = "下车站", singleLine = true,
+                if (c.isMetro() || editableNames) AlightField(alight, { alight = it }, metro = c.isMetro(), label = "下车站")
+                else GlassField(alight, { alight = it }, label = "下车站", singleLine = true,
                     modifier = Modifier.fillMaxWidth())
                 if (c.isMetro()) Text("在地铁段每次手动点「已上车」，会拿真实上车时间修正推算，越用越准。",
                     fontSize = 12.sp, lineHeight = 17.sp, color = Fuse.dim(dark))
@@ -443,9 +454,13 @@ fun CandidateDialog(c: Candidate, onDismiss: () -> Unit, onSave: (Candidate) -> 
         },
         confirmButton = {
             DialogButton("保存", primary = true, onClick = {
-                val changedSchedule = c.isMetro() && (peak != c.peakHw() || off != c.offPeakHw() || dir != c.metroDir)
+                val newName = if (editableNames && c.type == Candidate.Type.BUS) ManualEntry.lineName(lineName) else lineName.trim()
+                val renamed = editableNames && ((newName.isNotEmpty() && newName != c.name) || (stopName.isNotBlank() && stopName.trim() != c.stopName))
+                val changedSchedule = c.isMetro() && (peak != c.peakHw() || off != c.offPeakHw() || dir != c.metroDir || renamed)
                 if (changedSchedule) Learn.resetMetro(ctx, c)
                 onSave(c.copy(
+                    name = if (editableNames) newName.ifEmpty { c.name } else c.name,
+                    stopName = if (editableNames) stopName.trim().ifEmpty { c.stopName } else c.stopName,
                     alightName = alight.trim(),
                     alightLat = if (alight.trim() == c.alightName) c.alightLat else Double.NaN,
                     alightLng = if (alight.trim() == c.alightName) c.alightLng else Double.NaN,
