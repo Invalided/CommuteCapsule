@@ -67,7 +67,7 @@ enum class OnboardingStep(val title: String) {
 
 /**
  * 引导进度：只在首次启动出现，进度存本机，中途退出下次接着走；设置里可以重新打开。
- * 升级上来的老用户（已有行程或学习数据）不弹引导。
+ * 升级上来的老用户（已有行程或学习数据，判定见 [OnboardingGate]）不弹引导。
  */
 object OnboardingState {
     private const val PREFS = "onboarding"
@@ -79,12 +79,14 @@ object OnboardingState {
 
     fun needed(ctx: Context): Boolean {
         val p = sp(ctx)
-        if (p.getBoolean(KEY_DONE, false)) return false
-        if (p.getBoolean(KEY_STARTED, false)) return true
-        val legacy = TripStore.all(ctx).isNotEmpty() ||
-            listOf("places", "learn", "learn_ride2", "run_state").any { ctx.getSharedPreferences(it, Context.MODE_PRIVATE).all.isNotEmpty() }
-        if (legacy) { p.edit().putBoolean(KEY_DONE, true).apply(); return false }
-        p.edit().putBoolean(KEY_STARTED, true).apply()
+        val done = p.getBoolean(KEY_DONE, false)
+        if (p.getBoolean(KEY_STARTED, false)) return OnboardingGate.shouldShow(done, started = true, hasUserData = false)
+        val prefs = OnboardingGate.PREF_FILES.associateWith { ctx.getSharedPreferences(it, Context.MODE_PRIVATE).all }
+        val existing = OnboardingGate.hasUserData(TripStore.all(ctx).isNotEmpty(), prefs)
+        if (!OnboardingGate.shouldShow(done, started = false, hasUserData = existing)) {
+            p.edit().putBoolean(KEY_DONE, true).apply(); return false
+        }
+        p.edit().putBoolean(KEY_STARTED, true).putBoolean(KEY_DONE, false).apply()
         return true
     }
 
