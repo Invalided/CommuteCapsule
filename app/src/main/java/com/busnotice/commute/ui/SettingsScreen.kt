@@ -43,7 +43,7 @@ fun SettingsScreen(
             GlassRow(headline = "后台保活体检", supporting = "检查系统和手机厂商的后台设置", onClick = onKeepalive)
         }
         if (onOnboarding != null) item {
-            GlassRow(headline = "重新打开首次引导", supporting = "从欢迎页开始，已有的行程和设置不受影响", onClick = onOnboarding)
+            GlassRow(headline = "重看首页介绍", supporting = "回到首页重新逐项介绍，已有的行程和设置不受影响", onClick = onOnboarding)
         }
         sectionHeader("学习数据")
         item {

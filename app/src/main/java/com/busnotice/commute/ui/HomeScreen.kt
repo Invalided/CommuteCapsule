@@ -180,7 +180,7 @@ fun HomeScreen(
             contentColor = ink,
             floatingActionButton = {
                 ExtendedFloatingActionButton(
-                    onClick = onNew, icon = { Icon(Icons.Default.Add, null) }, text = { Text("新建行程", fontWeight = FontWeight.Bold) },
+                    onClick = onNew, modifier = Modifier.coachTarget(CoachStep.NEW_TRIP), icon = { Icon(Icons.Default.Add, null) }, text = { Text("新建行程", fontWeight = FontWeight.Bold) },
                     shape = CircleShape,
                     containerColor = if (dark) Fuse.Yellow else Fuse.Night,
                     contentColor = if (dark) Color(0xFF111111) else Color.White,
@@ -203,7 +203,7 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("通勤胶囊", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = ink, modifier = Modifier.weight(1f))
-                        Box {
+                        Box(Modifier.coachTarget(CoachStep.MENU)) {
                             RoundButton(onClick = { menuOpen = true }, dark = dark) {
                                 Text("⋯", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = ink)
                             }
@@ -255,7 +255,7 @@ fun HomeScreen(
                             }
                         }
                     }
-                    if (!demoOn) placeText?.let { PlaceChip(it, dark) }
+                    if (!demoOn) placeText?.let { PlaceChip(it, dark, Modifier.coachTarget(CoachStep.PLACES)) }
                   }
                 }
                 if (!demoOn && usingDemoData && !demoHintLater) item(key = "demo-data") {
@@ -290,7 +290,7 @@ fun HomeScreen(
                 }
                 // 缺必需设置时放上面显眼处，全齐了就放到列表最后
                 val permUrgent = perms.any { !it.granted && !it.optional }
-                if (permUrgent) item(key = "perm") { PermRow(perms, dark) { permSheet = true } }
+                if (permUrgent) item(key = "perm") { PermRow(perms, dark, Modifier.coachTarget(CoachStep.CHECKS)) { permSheet = true } }
                 if (!demoOn && trips.isEmpty()) item {
                     Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("还没有行程", style = MaterialTheme.typography.titleMedium, color = ink)
@@ -347,7 +347,7 @@ fun HomeScreen(
                         },
                     )
                 }
-                if (!permUrgent && perms.isNotEmpty()) item(key = "perm") { PermRow(perms, dark) { permSheet = true } }
+                if (!permUrgent && perms.isNotEmpty()) item(key = "perm") { PermRow(perms, dark, Modifier.coachTarget(CoachStep.CHECKS)) { permSheet = true } }
                 // 手机厂商的后台设置还没全部勾选：一直在列表末尾提示，点进体检页
                 if (!demoOn && keepalive.first < keepalive.second) item(key = "keepalive") {
                     KeepaliveRow(keepalive.first, keepalive.second, dark, onKeepalive)
@@ -443,9 +443,9 @@ private fun DemoDataNotice(dark: Boolean, onSwitch: () -> Unit, onLater: () -> U
 
 /** 标题下的小玻璃胶囊：在家 / 在公司 / 路上 / 学习中 */
 @Composable
-private fun PlaceChip(text: String, dark: Boolean) {
+private fun PlaceChip(text: String, dark: Boolean, modifier: Modifier = Modifier) {
     Row(
-        Modifier.padding(start = 8.dp, bottom = 2.dp).clip(CircleShape)
+        Modifier.padding(start = 8.dp, bottom = 2.dp).then(modifier).clip(CircleShape)
             .background(Color.White.copy(alpha = if (dark) 0.10f else 0.55f))
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -474,12 +474,12 @@ private fun KeepaliveRow(done: Int, total: Int, dark: Boolean, onOpen: () -> Uni
 
 /** 设置检查一行：「设置检查  N / M ›」，缺必需项时显示琥珀色提示 */
 @Composable
-private fun PermRow(perms: List<Perm>, dark: Boolean, onOpen: () -> Unit) {
+private fun PermRow(perms: List<Perm>, dark: Boolean, modifier: Modifier = Modifier, onOpen: () -> Unit) {
     val ink = Fuse.ink(dark)
     val ok = perms.count { it.granted }
     val missing = perms.count { !it.granted && !it.optional }
     Row(
-        Modifier.fillMaxWidth().glass(dark).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 16.dp),
+        Modifier.fillMaxWidth().then(modifier).glass(dark).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("设置检查", fontSize = 14.sp, color = ink)
