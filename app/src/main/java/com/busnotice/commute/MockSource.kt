@@ -57,6 +57,34 @@ object MockSource : StaticSource, RealtimeSource {
         StopPoint(idOf(l, it), l.names[it], it + 1, l.coords[it].first, l.coords[it].second)
     }
 
+    /** 首页演示行程的 id：固定前缀，不与用户行程、演示回放的行程冲突 */
+    const val SAMPLE_TRIP_ID = "demo-sample"
+
+    /**
+     * 首页演示行程：用本数据源的虚构线路拼成（1 路公交到「中心广场」，换乘地铁 1 号线到「软件园」）。
+     * 只在首页展示，不写入行程存储，因此不会排闹钟、注册围栏或触发后台采样。
+     */
+    val sampleTrip: Trip by lazy {
+        val bus = line("m1"); val b = 1; val ba = 3
+        val mt = line("mt1"); val m = 2; val ma = 4
+        Trip(
+            id = SAMPLE_TRIP_ID, name = "上班（演示）",
+            legs = listOf(
+                Leg(listOf(Candidate(
+                    Candidate.Type.BUS, bus.name, bus.names[b], bus.coords[b].first, bus.coords[b].second,
+                    lineId = bus.id, stationId = idOf(bus, b), lastStop = bus.names.last(), stopIndex = b + 1,
+                    alightName = bus.names[ba], alightLat = bus.coords[ba].first, alightLng = bus.coords[ba].second,
+                )), rideMin = 5),
+                Leg(listOf(Candidate(
+                    Candidate.Type.METRO, "1号线", mt.names[m], mt.coords[m].first, mt.coords[m].second,
+                    metroDir = mt.names.last(), alightName = mt.names[ma],
+                    alightLat = mt.coords[ma].first, alightLng = mt.coords[ma].second,
+                )), rideMin = 6, transferWalkMin = 3),
+            ),
+            startMinute = 8 * 60, endMinute = 8 * 60 + 30,
+        )
+    }
+
     override fun search(key: String, region: String): SearchResult {
         val k = key.trim().removeSuffix("路")
         if (k.isEmpty()) return SearchResult(emptyList(), emptyList())

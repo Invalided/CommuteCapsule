@@ -124,10 +124,10 @@ fun HomeScreen(
     var menuOpen by remember { mutableStateOf(false) }
     var sourceOpen by remember { mutableStateOf(false) }
     var permSheet by remember { mutableStateOf(false) }
-    // 当前用演示数据时首页提示；切换后立即刷新，点「稍后」后到进程结束前不再显示
+    // 当前用演示数据时首页提示；切换后立即刷新。点「稍后」存本机，切回演示数据时重新显示
     var dataVer by remember { mutableStateOf(0) }
-    var demoHintLater by remember { mutableStateOf(demoHintDismissed) }
     val usingDemoData = remember(resumeTick, dataVer, sourceOpen) { com.busnotice.commute.Transit.usingDemo }
+    var demoHintLater by remember(resumeTick, dataVer, sourceOpen) { mutableStateOf(com.busnotice.commute.Transit.demoHintSnoozed(ctx)) }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { version++ }
     val perms = remember(resumeTick, version) { permChecks(ctx, { p -> permLauncher.launch(p) }) { version++ } }
@@ -168,6 +168,18 @@ fun HomeScreen(
     }
 
     val listState = rememberLazyListState()
+    // 设置检查卡在列表中的位置（每次组成列表时更新），聚光引导指到它时用来把它滚进屏幕
+    val permAt = remember { intArrayOf(-1) }
+    val coach = LocalCoachTargets.current
+    val coachFocus = coach?.focus
+    LaunchedEffect(coachFocus) {
+        if (coach == null || coachFocus == null || coach.available(coachFocus)) return@LaunchedEffect
+        when (coachFocus) {
+            CoachStep.PLACES, CoachStep.MENU -> listState.animateScrollToItem(0)
+            CoachStep.CHECKS -> permAt[0].takeIf { it >= 0 }?.let { listState.animateScrollToItem(it) }
+            CoachStep.NEW_TRIP -> Unit
+        }
+    }
     // 点「测试」或行程开始后，实时看板插到列表顶部：滚回顶部让看板完整露出来，不被挤到上面
     val liveId = live?.tripId
     LaunchedEffect(liveId) { if (liveId != null) listState.animateScrollToItem(0) }
@@ -257,45 +269,84 @@ fun HomeScreen(
                     if (!demoOn) placeText?.let { PlaceChip(it, dark, Modifier.coachTarget(CoachStep.PLACES)) }
                   }
                 }
-                if (!demoOn && usingDemoData && !demoHintLater) item(key = "demo-data") {
-                    DemoDataNotice(
-                        dark,
-                        onSwitch = {
-                            com.busnotice.commute.Transit.setMode(ctx, com.busnotice.commute.Transit.DataMode.LEARN); dataVer++
-                            scope.launch { snack.showSnackbar("已切换到边用边学：添加线路时可以直接记下线路名和站名") }
-                        },
-                        onLater = { demoHintLater = true; demoHintDismissed = true },
-                    )
+                // 演示数据且还没有自己的行程：顶部放一条内置演示行程（只显示，不写入行程存储）
+                var idx = 1
+                val showSample = !demoOn && usingDemoData && trips.isEmpty()
+                if (showSample) {
+                    item(key = "sample") {
+                        TripCard(
+                            trip = com.busnotice.commute.MockSource.sampleTrip, running = false, dark = dark, sample = true,
+                            onToggle = {}, onEdit = {
+                                scope.launch { snack.showSnackbar("这是演示行程，不会提醒；点「开始」看一遍演示回放，点「新建行程」建你自己的一条") }
+                            },
+                            onTest = {
+                                if (CommuteService.instance != null) {
+                                    scope.launch { snack.showSnackbar("行程进行中，演示回放不可用") }
+                                } else {
+                                    com.busnotice.commute.DemoPlayer.start(ctx, 30)
+                                }
+                            },
+                            onReverse = {}, onDelete = {}, onRestart = {}, onApplyLearned = {},
+                        )
+                    }
+                    idx++
+                }
+                if (!demoOn && usingDemoData && !demoHintLater) {
+                    item(key = "demo-data") {
+                        DemoDataNotice(
+                            dark,
+                            onSwitch = {
+                                com.busnotice.commute.Transit.setMode(ctx, com.busnotice.commute.Transit.DataMode.LEARN); dataVer++
+                                scope.launch { snack.showSnackbar("已切换到边用边学：添加线路时可以直接记下线路名和站名") }
+                            },
+                            onLater = { com.busnotice.commute.Transit.snoozeDemoHint(ctx); demoHintLater = true },
+                        )
+                    }
+                    idx++
                 }
                 val demoBoard = demo
                 demoCount?.let { n ->
                     item(key = "demo-count") { PlaceChip("演示 $n 秒后开始 · 现在可以回到桌面", dark) }
+                    idx++
                 }
                 if (demoBoard != null) {
                     item(key = "demo-badge") { PlaceChip(com.busnotice.commute.DemoPlayer.BADGE, dark) }
                     item(key = "demo") { LiveBoard(demoBoard, com.busnotice.commute.DemoPlayer.trip, dark) }
+                    idx += 2
                 }
                 val board = if (demoBoard != null) null else live
                 if (!demoOn && board == null && pendingTrip == null && advice != null) {
                     item(key = "depart") { DepartBoard(advice!!, nowTick, dark) }
+                    idx++
                 }
                 if (demoOn) Unit
                 else if (board != null && pendingTrip == null) {
                     item(key = "live") { LiveBoard(board, trips.firstOrNull { it.id == board.tripId }, dark) }
+                    idx++
                 } else if (pendingTrip != null && !pendingExpired) {
                     // 服务 30 秒内还没起来就不再显示占位
                     val name = board?.tripName ?: trips.firstOrNull { it.id == pendingTrip }?.name ?: "通勤"
                     item(key = "live") { RestoringBoard(name, dark) }
+                    idx++
                 }
-                // 缺必需设置时放上面显眼处；必需项都齐了（只差手机厂商设置或可选项）就放到列表最后
-                val permUrgent = summaryOf(perms).urgent
-                if (permUrgent) item(key = "perm") { PermRow(perms, dark, Modifier.coachTarget(CoachStep.CHECKS)) { permSheet = true } }
-                if (!demoOn && trips.isEmpty()) item {
-                    Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("还没有行程", style = MaterialTheme.typography.titleMedium, color = ink)
-                        Spacer(Modifier.height(4.dp))
-                        Text("新建一条，选好上车站和时间就行", style = MaterialTheme.typography.bodyMedium, color = dimColor)
+                // 缺必需设置时放上面显眼处（有演示行程时也紧跟在演示数据提示之后）；
+                // 必需项都齐了（只差手机厂商设置或可选项）就放到列表最后
+                val permTop = summaryOf(perms).urgent || showSample
+                if (permTop) {
+                    item(key = "perm") { PermRow(perms, dark, Modifier.coachTarget(CoachStep.CHECKS)) { permSheet = true } }
+                    permAt[0] = idx
+                    idx++
+                }
+                if (!demoOn && trips.isEmpty()) {
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(if (showSample) "还没有你自己的行程" else "还没有行程", style = MaterialTheme.typography.titleMedium, color = ink)
+                            Spacer(Modifier.height(4.dp))
+                            Text(if (showSample) "上面是演示行程。点「新建行程」建你自己的一条，选好上车站和时间就行" else "新建一条，选好上车站和时间就行",
+                                style = MaterialTheme.typography.bodyMedium, color = dimColor)
+                        }
                     }
+                    idx++
                 }
                 if (demoOn) items(com.busnotice.commute.DemoPlayer.showTrips, key = { "demo-" + it.id }) { t ->
                     TripCard(
@@ -346,7 +397,10 @@ fun HomeScreen(
                         },
                     )
                 }
-                if (!permUrgent && perms.isNotEmpty()) item(key = "perm") { PermRow(perms, dark, Modifier.coachTarget(CoachStep.CHECKS)) { permSheet = true } }
+                if (!permTop && perms.isNotEmpty()) {
+                    permAt[0] = idx + (if (demoOn) com.busnotice.commute.DemoPlayer.showTrips.size else trips.size)
+                    item(key = "perm") { PermRow(perms, dark, Modifier.coachTarget(CoachStep.CHECKS)) { permSheet = true } }
+                }
             }
         }
     }
@@ -407,9 +461,6 @@ fun HomeScreen(
         )
     }
 }
-
-/** 演示数据提示点过「稍后」：只在本次进程内记住，下次打开 App 仍会提示 */
-private var demoHintDismissed = false
 
 /** 当前用的是虚构演示数据：说明搜不到真实线路，并可一键切换到「边用边学」 */
 @Composable
@@ -488,7 +539,7 @@ private fun PermSheet(perms: List<Perm>, onBatch: (() -> Unit)?) {
 
 @Composable
 private fun TripCard(
-    trip: Trip, running: Boolean, dark: Boolean,
+    trip: Trip, running: Boolean, dark: Boolean, sample: Boolean = false,
     onToggle: (Boolean) -> Unit, onTest: () -> Unit, onEdit: () -> Unit, onReverse: () -> Unit, onDelete: () -> Unit,
     onRestart: () -> Unit,
     @Suppress("UNUSED_PARAMETER") onApplyLearned: (Learn.Suggestion) -> Unit,
@@ -510,7 +561,8 @@ private fun TripCard(
             Column(horizontalAlignment = Alignment.End) {
                 Text(hhmm(trip.startMinute), fontSize = 28.sp, fontWeight = FontWeight.Bold, color = ink,
                     style = TextStyle(fontFeatureSettings = "tnum"), modifier = Modifier.alpha(fade))
-                Switch(
+                // 演示行程不排闹钟：不显示开关
+                if (!sample) Switch(
                     checked = trip.enabled, onCheckedChange = onToggle,
                     colors = SwitchDefaults.colors(
                         checkedTrackColor = if (dark) Fuse.Yellow else Fuse.Night,
@@ -525,7 +577,11 @@ private fun TripCard(
         }
         RouteRow(trip, dark, Modifier.padding(top = 6.dp).alpha(fade))
         // 下次触发的说明可能较长：单独占一行（最多两行），不和「测试」「⋯」挤在一起被截断
-        val nextText = if (!running && trip.enabled) Scheduler.nextTriggerText(trip, ctx) else null
+        val nextText = when {
+            sample -> "演示行程 · 不会提醒，也不会自动开始；点「开始」播放演示回放"
+            !running && trip.enabled -> Scheduler.nextTriggerText(trip, ctx)
+            else -> null
+        }
         if (nextText != null) {
             Text(nextText, fontSize = 13.sp, color = dimColor, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 10.dp, end = 4.dp))
@@ -547,7 +603,8 @@ private fun TripCard(
             TextButton(onClick = onTest, contentPadding = PaddingValues(horizontal = 10.dp)) {
                 Text(if (running) "进行中" else "开始", fontSize = 13.sp, color = dimColor)
             }
-            Box {
+            // 演示行程不能编辑、删除或生成回程
+            if (!sample) Box {
                 TextButton(onClick = { more = true }, contentPadding = PaddingValues(horizontal = 10.dp)) {
                     Text("⋯", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = dimColor)
                 }

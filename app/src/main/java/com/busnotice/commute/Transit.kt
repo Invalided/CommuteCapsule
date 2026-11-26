@@ -177,8 +177,21 @@ object Transit {
 
     fun setMode(ctx: Context, m: DataMode) {
         mode = m
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_MODE, m.name).apply()
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_MODE, m.name)
+            // 切回演示数据：之前点过「稍后」的演示数据提示重新显示
+            .apply { if (m == DataMode.DEMO) remove(KEY_DEMO_HINT_LATER) }
+            .apply()
         synchronized(this) { if (inited) applySources() }
+    }
+
+    private const val KEY_DEMO_HINT_LATER = "demo_hint_later"
+
+    /** 首页演示数据提示是否被点过「稍后」（存本机；切回演示数据时清除） */
+    fun demoHintSnoozed(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_DEMO_HINT_LATER, false)
+
+    fun snoozeDemoHint(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_DEMO_HINT_LATER, true).apply()
     }
 
     /** 接入了扩展数据源（演示 / 边用边学的选择不起作用） */

@@ -67,6 +67,10 @@ import kotlin.math.roundToInt
 class CoachTargets {
     internal val rects = mutableStateMapOf<CoachStep, Rect>()
     fun available(step: CoachStep): Boolean = rects.containsKey(step)
+
+    /** 引导当前指向的步骤；首页据此把不在屏幕内的目标滚进来。引导结束后为 null */
+    var focus by mutableStateOf<CoachStep?>(null)
+        internal set
 }
 
 /** 首页通过它登记聚光目标；未提供时 [coachTarget] 不做任何事 */
@@ -127,6 +131,8 @@ fun CoachMarks(targets: CoachTargets, step: CoachStep, onStep: (CoachStep) -> Un
     val done by rememberUpdatedState(onDone)
     val target = targets.rects[step]
     val present = target != null
+    LaunchedEffect(step) { targets.focus = step }
+    DisposableEffect(targets) { onDispose { targets.focus = null } }
 
     // 目标不可见：稍等片刻（首页内容可能还在加载），仍不可见就跳到下一步
     LaunchedEffect(step, present) {
