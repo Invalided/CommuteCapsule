@@ -23,7 +23,7 @@ object SurfaceProfiles {
         val today = LocalDate.now().toString()
         val files = File(ctx.filesDir, "traces").listFiles { f -> f.name.endsWith("_$trip8.jsonl") && !f.name.startsWith(today) }
             ?.sortedBy { it.name } ?: return null
-        val days = files.mapNotNull { f -> runCatching { series(f.readLines(), busLeg, target) }.getOrNull() }.takeLast(KEEP_DAYS)
+        val days = files.mapNotNull { f -> runCatching { series(TraceStore.readLines(ctx, f), busLeg, target) }.getOrNull() }.takeLast(KEEP_DAYS)
         if (days.isEmpty()) null else DistProfile(days)
     }.getOrNull()
 

@@ -101,7 +101,7 @@ object DepartAdvisor {
             val per = days.mapNotNull { d ->
                 val f = java.io.File(dir, "${d}_bus.jsonl")
                 if (!f.exists()) return@mapNotNull null
-                f.readLines().mapNotNull { l ->
+                TraceStore.readLines(ctx, f).mapNotNull { l ->
                     val o = runCatching { JSONObject(l) }.getOrNull() ?: return@mapNotNull null
                     if (o.optString("k") != "bus_arr" || o.optString("key") != key) return@mapNotNull null
                     val t = Instant.ofEpochMilli(o.optLong("est")).atZone(zone)

@@ -235,7 +235,7 @@ object MetroCells {
         return files.mapNotNull { file ->
             val day = file.name.substringBefore('_')
             if (day == today || day in skipDays) return@mapNotNull null
-            runCatching { MetroEta.traceRide(file.readLines(), isMetroTac) }.getOrNull()
+            runCatching { MetroEta.traceRide(TraceStore.readLines(ctx, file), isMetroTac) }.getOrNull()
         }
     }
 

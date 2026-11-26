@@ -244,6 +244,11 @@ class BootReceiver : BroadcastReceiver() {
 object Diag {
     fun mark(ctx: Context, what: String) {
         TraceLog.event("diag", "msg" to what)
+        note(ctx, what)
+    }
+
+    /** 只记到首页诊断，不写行程记录（供记录读写路径内部调用，避免重入） */
+    fun note(ctx: Context, what: String) {
         val t = java.time.LocalDateTime.now()
         ctx.getSharedPreferences("diag", Context.MODE_PRIVATE).edit()
             .putString("last", "%d/%d %02d:%02d %s".format(t.monthValue, t.dayOfMonth, t.hour, t.minute, what)).apply()

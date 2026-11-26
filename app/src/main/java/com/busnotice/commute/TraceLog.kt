@@ -41,6 +41,7 @@ import kotlin.math.sqrt
  *        p = 气压均值（hPa，下扶梯约 −0.1 hPa/米、进出隧道有压力波）；手机没有对应传感器就不写那一项
  *  ev    状态：上车、换段、判断下车、提醒、手动结束等
  * 保留最近 30 天。
+ * 落盘时每行单独加密（格式见 [RecordFormat]，读写经由 [TraceStore]），导出时解密为明文。
  */
 object TraceLog {
     private const val KEEP_DAYS = 30L
@@ -109,7 +110,7 @@ object TraceLog {
     /** 基站已经多久没换了（毫秒）；记录没开返回 null */
     fun cellStillMs(now: Long): Long? = if (writer == null || cellSince == 0L) null else now - cellSince
 
-    private fun dir(ctx: Context) = File(ctx.filesDir, "traces").apply { mkdirs() }
+    private fun dir(ctx: Context) = TraceStore.dir(ctx)
 
     /** 每次查基站（5 秒一次，不管变没变）都回调一次，给地铁进出站 / 基站学习用；在记录线程上调用 */
     @Volatile var onCell: ((CellSnap) -> Unit)? = null
@@ -120,6 +121,7 @@ object TraceLog {
         val c = ctx.applicationContext; app = c
         prune(c)
         val f = File(dir(c), "${LocalDate.now()}_${tripId.take(8)}.jsonl")
+        TraceStore.beginAppend(c, f)
         writer = OutputStreamWriter(FileOutputStream(f, true), Charsets.UTF_8)
         val t = HandlerThread("trace").apply { start() }; thread = t
         h = Handler(t.looper)
@@ -202,6 +204,7 @@ object TraceLog {
         h?.removeCallbacksAndMessages(null)
         thread?.quitSafely(); thread = null; h = null
         runCatching { writer?.close() }; writer = null
+        TraceStore.endAppend()
     }
 
     fun event(name: String, vararg kv: Pair<String, Any?>) {
@@ -225,9 +228,11 @@ object TraceLog {
     @Synchronized
     private fun write(type: String, o: JSONObject) {
         val w = writer ?: return
+        val c = app ?: return
         runCatching {
             o.put("t", System.currentTimeMillis()).put("k", type)
-            w.write(o.toString()); w.write("\n"); w.flush()
+            val line = LocalCrypto.encrypt(c, o.toString()) ?: return
+            synchronized(TraceStore.lock) { w.write(line); w.write("\n"); w.flush() }
         }
     }
 
@@ -347,17 +352,23 @@ object TraceLog {
         dir(ctx).listFiles()?.forEach { if (it.name.take(10) < cut) it.delete() }
     }
 
-    fun dayCount(ctx: Context): Int =
-        dir(ctx).listFiles()?.map { it.name.take(10) }?.distinct()?.size ?: 0
+    private fun records(ctx: Context) = dir(ctx).listFiles { f -> f.isFile && !f.name.endsWith(RecordMigration.TMP_SUFFIX) }
 
-    /** 打包所有记录，用系统分享发出去（由用户自己选发到哪） */
+    fun dayCount(ctx: Context): Int =
+        records(ctx)?.map { it.name.take(10) }?.distinct()?.size ?: 0
+
+    /** 打包所有记录（解密为明文），用系统分享发出去（由用户自己选发到哪） */
     fun share(ctx: Context): Boolean {
-        val files = dir(ctx).listFiles()?.filter { it.length() > 0 }?.sortedBy { it.name } ?: return false
+        val files = records(ctx)?.filter { it.length() > 0 }?.sortedBy { it.name } ?: return false
         if (files.isEmpty()) return false
         val out = File(ctx.cacheDir, "export").apply { mkdirs() }
         val zip = File(out, "commute-traces-${LocalDate.now()}.zip")
         ZipOutputStream(FileOutputStream(zip)).use { z ->
-            files.forEach { f -> z.putNextEntry(ZipEntry(f.name)); f.inputStream().use { it.copyTo(z) }; z.closeEntry() }
+            files.forEach { f ->
+                z.putNextEntry(ZipEntry(f.name))
+                TraceStore.readLines(ctx, f).forEach { z.write(it.toByteArray(Charsets.UTF_8)); z.write('\n'.code) }
+                z.closeEntry()
+            }
         }
         val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", zip)
         ctx.startActivity(Intent.createChooser(

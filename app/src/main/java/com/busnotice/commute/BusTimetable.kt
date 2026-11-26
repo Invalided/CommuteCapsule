@@ -38,11 +38,11 @@ object BusTimetable {
         dir.listFiles { f -> f.name.endsWith("_bus.jsonl") }?.forEach { f ->
             val d = runCatching { LocalDate.parse(f.name.take(10)) }.getOrNull() ?: return@forEach
             if (d < from || d >= today) return@forEach
-            f.forEachLine { line ->
-                if (!line.contains("\"bus_arr\"")) return@forEachLine
-                val o = runCatching { JSONObject(line) }.getOrNull() ?: return@forEachLine
+            TraceStore.readLines(ctx, f).forEach { line ->
+                if (!line.contains("\"bus_arr\"")) return@forEach
+                val o = runCatching { JSONObject(line) }.getOrNull() ?: return@forEach
                 val est = o.optLong("est"); val k = o.optString("key")
-                if (est <= 0 || k.isEmpty()) return@forEachLine
+                if (est <= 0 || k.isEmpty()) return@forEach
                 val t = Instant.ofEpochMilli(est).atZone(zone)
                 out.getOrPut(k) { HashMap() }.getOrPut(t.toLocalDate()) { mutableListOf() }.add(t.hour * 60 + t.minute)
             }

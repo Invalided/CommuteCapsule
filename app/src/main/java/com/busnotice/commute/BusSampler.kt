@@ -21,7 +21,7 @@ import java.time.ZoneId
  *
  * 行程时间窗里（往后多看一段，覆盖到晚上的班次）每 4 分钟查一次行程里每条公交线的实时，
  * 按车辆编号跟踪「还有几秒到」；一辆快到的车下一次查询时不见了，就把它最后一次预估当作实际到站。
- * 攒几天就是自己的到站时刻表，以后拿来算出发窗口。数据只存本机 traces 目录，随「导出行程记录」一起导出。
+ * 攒几天就是自己的到站时刻表，以后拿来算出发窗口。数据只存本机 traces 目录（逐行加密），随「导出行程记录」一起导出。
  */
 object BusSampler {
     const val EVERY_MS = 4 * 60_000L
@@ -163,8 +163,7 @@ object BusSampler {
 
     fun write(ctx: Context, o: JSONObject) {
         runCatching {
-            val dir = File(ctx.filesDir, "traces").apply { mkdirs() }
-            File(dir, "${LocalDate.now()}_bus.jsonl").appendText(o.toString() + "\n")
+            TraceStore.append(ctx, File(TraceStore.dir(ctx), "${LocalDate.now()}_bus.jsonl"), o.toString())
         }
     }
 }
