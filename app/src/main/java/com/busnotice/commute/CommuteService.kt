@@ -318,7 +318,7 @@ class CommuteService : Service() {
         TraceLog.event("dev", "what" to (if (Health.screenOn(this)) "screen_on" else "screen_off"), "plugged" to Health.plugged(this))
         TraceLog.onCell = { snap -> scope.launch(Dispatchers.Main) { runCatching { onCell(snap) }.onFailure { Log.w(TAG, "基站处理失败", it) } } }
         walkFixes.clear(); firstWalkDone = false; userRestarted = restart
-        metroGate.reset(); enterVetoAt = 0L; cellExitAt = 0L; lastUgAt = 0L; surfaceSince = 0L; goodGpsAt = 0L; lastLiveKey = ""; if (metroRideOn) fpRec.finish(); metroRideOn = false; busMovingOn = false; tacLearner = null
+        metroGate.reset(); enterVetoAt = 0L; cellExitAt = 0L; lastUgAt = 0L; surfaceSince = 0L; goodGpsAt = 0L; LiveNotifier.resetGate(); pendingArriveAlert = null; if (metroRideOn) fpRec.finish(); metroRideOn = false; busMovingOn = false; tacLearner = null
         stationAt = 0L; metroRideSec.clear(); metroRoutes.clear(); alightAt = 0L; fenceFixes.clear(); stillSince = 0L; lastFastAt = 0L; rideLearned = false; stopAlerted = ""
         stationByTap = false; arriveAnchorAt = 0L; metroAnchorIdx = -1; metroAnchorAt = 0L
         deferredTapAt = 0L; deferredTapKind = null
@@ -709,6 +709,7 @@ class CommuteService : Service() {
             val wait = try { tick() } catch (e: Exception) {
                 Log.w(TAG, "刷新失败", e); 20_000L
             }
+            flushPendingAlert()
             val t0 = System.currentTimeMillis()
             delay(wait)
             val over = System.currentTimeMillis() - t0 - wait
@@ -1407,11 +1408,13 @@ class CommuteService : Service() {
         // 公交有新鲜定位时只信位置，不按倒计时（倒计时只在没定位时兜底）
         val timeUp = etaKnown && now >= eta - 90_000 && !freshFar &&
             (if (metro) (d == null || d < 1_500 + (loc?.accuracy ?: 0f)) else !freshLoc)
+        // 本轮要发的「快到了」提醒：等本轮胶囊内容算完再发，展开的卡片直接显示新内容
+        var arriveAlert = pendingArriveAlert.also { pendingArriveAlert = null }
         if (arriveAlertedAt == 0L && (near || busLast || timeUp)) {
             TraceLog.event("arrive_alert", "d" to d?.toInt(), "near" to near, "busLast" to busLast, "timeUp" to timeUp)
             arriveAlertedAt = now
             saveRun(deadlineAt)   // 立刻存：实测被杀重启 5 次，每次都重弹「快到了」
-            LiveNotifier.alert(this, "快到 $name 了", "准备下车", metro = metro, id = 1005)
+            arriveAlert = LiveAlert("快到 $name 了", "准备下车", metro, 1005)
         }
         // 结束：到了下车站 150 米内；或提醒后过了 5 分钟且超过预计到站时间（地铁 3 分钟、公交 10 分钟）。
         // 新鲜定位显示离下车站 1.5 公里以上时绝不按时间结束（人还在车上，只是车慢）
@@ -1421,6 +1424,7 @@ class CommuteService : Service() {
         val byTime = arriveAlertedAt > 0 && !freshFar && now - arriveAlertedAt > 5 * 60_000L &&
             now > eta + (if (metro) 3 else 10) * 60_000L
         if (byLoc || byTime) {
+            arriveAlert?.let { sendAlert(it) }
             if (byLoc && br != null && !restored && boardedAt > 0) {
                 val min = (now - boardedAt) / 60_000.0
                 if (min >= 3) Learn.recordBusSpeed(this, trip.id, legIdx, BusRide.lengthM(br) / min)
@@ -1496,7 +1500,7 @@ class CommuteService : Service() {
             if (trip.legs.size > 1) "${trip.name} · 最后一段" else trip.name,
             progress = p, stops = when { bsShow != null -> hops.coerceIn(0, 12); mr != null && arriveAlertedAt == 0L -> mr.hops.coerceIn(0, 12); else -> 0 },
             metro = metro, trackerRes = if (metro) R.drawable.ic_metro else R.drawable.ic_bus, riding = true)
-        pushLive(v)
+        pushLive(v, alertFirst = arriveAlert)
         // 界面用的站点进度：公交按沿线投影，地铁按已坐时间推算（与上面文字同一算法，只读）
         val stopUi: Pair<Int, Int>? = when {
             mr != null && arriveAlertedAt == 0L -> {
@@ -1615,28 +1619,37 @@ class CommuteService : Service() {
         override fun onReceive(c: android.content.Context?, i: Intent?) { scope.launch(Dispatchers.Main) { kick() } }
     }
 
-    /** 刷新流体云；定位不可用时在胶囊上显式标注，并在状态切换为不可用时弹出一次提醒 */
-    private fun pushLive(v: LiveNotifier.Visual) {
+    /** 一条展开流体云的提醒（标题、正文、是否地铁、横幅通知 id） */
+    private data class LiveAlert(val title: String, val text: String, val metro: Boolean, val id: Int)
+    /** 由出行信号触发、等待本轮刷新随新内容一起发出的到站提醒 */
+    private var pendingArriveAlert: LiveAlert? = null
+
+    private fun sendAlert(a: LiveAlert, visual: LiveNotifier.Visual? = null) =
+        LiveNotifier.alert(this, a.title, a.text, metro = a.metro, id = a.id, visual = visual)
+
+    /** 本轮刷新没有发出的到站提醒（刷新出错或未走到乘车分支）：直接发出，不丢提醒 */
+    private fun flushPendingAlert() {
+        pendingArriveAlert?.let { pendingArriveAlert = null; sendAlert(it) }
+    }
+
+    /**
+     * 刷新流体云；定位不可用时在胶囊上显式标注，并在状态切换为不可用时弹出一次提醒。
+     * [alertFirst] 为本轮需要展开的提醒：先以本轮新内容展开卡片，再提交常规刷新（由 [LiveNotifier] 节流）。
+     */
+    private fun pushLive(v: LiveNotifier.Visual, alertFirst: LiveAlert? = null) {
         val why = locBlocked()
+        val shown = if (why == null) v else
+            v.copy(title = "$why · ${v.title}", short = "开定位", text = "$why，无法判断上车与到站，请打开定位 · ${v.text}", urgent = true)
+        val n = LiveNotifier.build(this, shown)
         if (why != locBlockedReason) {
             if (why != null || locBlockedReason != null) TraceLog.event(if (why != null) "loc_off" else "loc_on", "why" to (why ?: locBlockedReason))
             locBlockedReason = why
-            if (why != null) LiveNotifier.alert(this, "$why · 无法判断上车与到站", "打开定位后自动恢复；关闭期间不识别地铁上车、到站与换乘", locSettings = true)
+            if (why != null) LiveNotifier.alert(this, "$why · 无法判断上车与到站", "打开定位后自动恢复；关闭期间不识别地铁上车、到站与换乘",
+                locSettings = true, visual = shown)
         }
-        val shown = if (why == null) v else
-            v.copy(title = "$why · ${v.title}", short = "开定位", text = "$why，无法判断上车与到站，请打开定位 · ${v.text}", urgent = true)
-        LiveNotifier.update(this, LiveNotifier.build(this, shown)); logLive(shown)
+        alertFirst?.let { sendAlert(it, shown) }
+        LiveNotifier.update(this, n, shown)
     }
-
-    private var lastLiveKey = ""
-    /** 流体云内容变了就记一行（只记录），方便核对胶囊上到底显示了什么 */
-    private fun logLive(v: LiveNotifier.Visual) {
-        val key = "${v.title}|${v.short}|${v.stops}"
-        if (key == lastLiveKey) return
-        lastLiveKey = key
-        TraceLog.event("live", "title" to v.title, "short" to v.short, "stops" to v.stops, "p" to v.progress)
-    }
-
 
     private var highSince = 0L
     private var coolUntil = 0L
@@ -2125,9 +2138,10 @@ class CommuteService : Service() {
     /** 关键时刻的闹钟到了：马上刷新一次（进程刚被叫醒） */
     fun onWakeAlarm() { scope.launch(Dispatchers.Main) { kick() } }
 
-    private fun kick() {
-        if (finishing || deadlineAt <= System.currentTimeMillis()) return
+    private fun kick(): Boolean {
+        if (finishing || deadlineAt <= System.currentTimeMillis()) return false
         loop?.cancel(); loop = scope.launch { runLoop(deadlineAt) }
+        return true
     }
 
     /** 刷卡时刻前后 2 分钟内、精度 200 米内的定位；没有就返回 null（地下、刚启动），这时退回按段顺序判断 */
@@ -2295,12 +2309,14 @@ class CommuteService : Service() {
                 arriveAnchorAt = at
                 TraceLog.event("arrive_anchor", "leg" to metroIdx, "expect" to (at + lastHopMs(metroIdx)))
                 Diag.mark(this, "快到${alightName(metroIdx)}，按播报校准")
-                if (metroIdx == legIdx && arriveAlertedAt == 0L) {
+                val alertNow = if (metroIdx == legIdx && arriveAlertedAt == 0L) {
                     arriveAlertedAt = System.currentTimeMillis()
-                    LiveNotifier.alert(this, "快到 ${alightName(legIdx)} 了", "准备下车", metro = true, id = 1005)
-                }
+                    LiveAlert("快到 ${alightName(legIdx)} 了", "准备下车", true, 1005)
+                } else null
                 saveRun(deadlineAt)
-                kick()
+                // 提醒交给紧接着的这一轮刷新：先算出新的胶囊内容再展开；刷新无法进行时直接提醒
+                if (alertNow != null) pendingArriveAlert = alertNow
+                if (!kick()) flushPendingAlert()
             }
         }
     }
@@ -2694,6 +2710,7 @@ class CommuteService : Service() {
         power = null; highSince = 0L; coolUntil = 0L
         LiveState.clearPersisted(this)
         if (instance === this || instance == null) LiveState.snapshot.value = null
+        LiveNotifier.resetGate()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
