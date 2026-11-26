@@ -39,6 +39,13 @@ class OnboardingGateTest {
         assertTrue(OnboardingGate.hasUserData(hasTrips = false, prefs = prefs))
     }
 
+    @Test fun separatedLocationSamplesCountAsUserData() {
+        val prefs = mapOf<String, Map<String, Any?>>("place_samples" to mapOf("samples" to "[[1.23,2.34,20.0,1]]"))
+        assertTrue(OnboardingGate.hasUserData(hasTrips = false, prefs = prefs))
+        val empty = mapOf<String, Map<String, Any?>>("place_samples" to mapOf("samples" to "[]"))
+        assertFalse(OnboardingGate.hasUserData(hasTrips = false, prefs = empty))
+    }
+
     @Test fun emptyLearningContainersAreIgnored() {
         val prefs = mapOf<String, Map<String, Any?>>(
             "places" to mapOf("clusters" to "[]", "samples" to " [] ", "nightDay" to 20000L, "nextSample" to 1L),

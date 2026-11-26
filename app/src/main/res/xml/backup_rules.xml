@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  旧版完整备份规则（Android 11 及以下读取；本应用 minSdk 为 31，保留以与 data_extraction_rules.xml 保持一致）。
+  只备份下列 SharedPreferences；原始定位采样、行程记录、基站指纹、运行状态与缓存不在名单内。
+-->
+<full-backup-content>
+    <include domain="sharedpref" path="trips.xml" />
+    <include domain="sharedpref" path="transit.xml" />
+    <include domain="sharedpref" path="places.xml" />
+    <include domain="sharedpref" path="learn.xml" />
+    <include domain="sharedpref" path="learn_ride2.xml" />
+    <include domain="sharedpref" path="learn_bus_speed.xml" />
+    <include domain="sharedpref" path="learn_metro.xml" />
+    <include domain="sharedpref" path="walk_learn.xml" />
+    <include domain="sharedpref" path="leave_wifi.xml" />
+    <include domain="sharedpref" path="keepalive.xml" />
+    <include domain="sharedpref" path="onboarding.xml" />
+    <include domain="sharedpref" path="backup.xml" />
+</full-backup-content>

@@ -22,6 +22,10 @@
     <application
         android:name=".CapsuleApp"
         android:allowBackup="true"
+        android:backupAgent=".CommuteBackupAgent"
+        android:fullBackupOnly="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="通勤胶囊"
         android:supportsRtl="true"

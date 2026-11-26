@@ -77,6 +77,8 @@ private fun PermItem(p: Perm) {
             }
             Spacer(Modifier.width(8.dp))
             when {
+                // 设置类提示（如系统备份）：直接给切换按钮
+                p.id == PermId.BACKUP && p.action != null -> PillButton(secondary = true, onClick = p.action) { Text(p.actionLabel) }
                 p.granted && p.group != PermGroup.VENDOR -> Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Check, null, tint = Fuse.BusGreen, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))

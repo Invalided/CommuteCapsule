@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  系统备份规则（Android 12 及以上）。云备份与换机迁移使用同一份白名单：只备份下列 SharedPreferences。
+  不在名单内的数据任何情况下都不备份，包括：
+    - 原始定位采样（place_samples）与行程记录目录 traces/（轨迹、基站、传感器）；
+    - 基站指纹（metro_fp.json、metro_cells）与公交到站采样（bus_sample）；
+    - 行程运行状态与看板（run_state、live_snapshot）、出行信号（transit_signal、transit_a11y）；
+    - 诊断、调度与缓存（health、diag、geo、ran_day、depart_advice、metro_route、updater）。
+  名单内的数据是否备份还取决于设置中的「参与系统备份」，由 CommuteBackupAgent 在运行时判断。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="trips.xml" />
+        <include domain="sharedpref" path="transit.xml" />
+        <include domain="sharedpref" path="places.xml" />
+        <include domain="sharedpref" path="learn.xml" />
+        <include domain="sharedpref" path="learn_ride2.xml" />
+        <include domain="sharedpref" path="learn_bus_speed.xml" />
+        <include domain="sharedpref" path="learn_metro.xml" />
+        <include domain="sharedpref" path="walk_learn.xml" />
+        <include domain="sharedpref" path="leave_wifi.xml" />
+        <include domain="sharedpref" path="keepalive.xml" />
+        <include domain="sharedpref" path="onboarding.xml" />
+        <include domain="sharedpref" path="backup.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="sharedpref" path="trips.xml" />
+        <include domain="sharedpref" path="transit.xml" />
+        <include domain="sharedpref" path="places.xml" />
+        <include domain="sharedpref" path="learn.xml" />
+        <include domain="sharedpref" path="learn_ride2.xml" />
+        <include domain="sharedpref" path="learn_bus_speed.xml" />
+        <include domain="sharedpref" path="learn_metro.xml" />
+        <include domain="sharedpref" path="walk_learn.xml" />
+        <include domain="sharedpref" path="leave_wifi.xml" />
+        <include domain="sharedpref" path="keepalive.xml" />
+        <include domain="sharedpref" path="onboarding.xml" />
+        <include domain="sharedpref" path="backup.xml" />
+    </device-transfer>
+</data-extraction-rules>

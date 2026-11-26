@@ -1,13 +1,16 @@
 package com.busnotice.commute
 
 import android.content.Context
+import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
 
 /**
- * 本机学「家」和「公司」两个常去地点：只存在手机本地（SharedPreferences），不上传，不进导出记录。
+ * 本机学「家」和「公司」两个常去地点：存在手机本地（SharedPreferences），不上传，不进导出记录。
+ * 学习结果（投票聚成的点、手动设置）存在 places；全天随机采样的原始定位单独存在 place_samples，
+ * 不参与系统备份（见 res/xml/data_extraction_rules.xml）。
  * 投票来源：
  *  1. 行程起点 / 终点：上午（12 点前）出发的行程，起点投「家」、终点投「公司」；下午/晚上的反过来。
  *     终点不按下车站投（下车后还要走一段），只投起点；
@@ -24,6 +27,9 @@ object Places {
     enum class Label { HOME, WORK, ON_THE_WAY, UNKNOWN }
 
     private const val PREFS = "places"
+    /** 原始定位采样：与学习结果分开存放，不参与系统备份 */
+    const val SAMPLE_PREFS = "place_samples"
+    private const val KEY_SAMPLES = "samples"
     private const val MERGE_M = 150.0
     private const val NEED_VOTES = 3
     private const val NEED_DAYS = 2
@@ -120,12 +126,33 @@ object Places {
     private var derivedCache: Map<Kind, Spot>? = null
     private var derivedBest: Map<Kind, Int>? = null
 
+    /**
+     * 旧版本把采样和学习结果存在同一个文件（places 的 samples 键）：搬到 place_samples。
+     * 先同步写入新文件，成功后再从旧文件删除，中途失败时旧数据仍在，下次再搬。
+     */
+    @Synchronized
+    fun migrateSamples(ctx: Context) {
+        moveKey(ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE),
+            ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE), KEY_SAMPLES)
+    }
+
+    /**
+     * 把字符串键 [key] 从 [src] 搬到 [dst]：[dst] 已有该键时以 [dst] 为准（搬过之后只写 [dst]）；
+     * 写入 [dst] 成功后才从 [src] 删除。返回 [src] 中是否已不再有该键。
+     */
+    internal fun moveKey(src: SharedPreferences, dst: SharedPreferences, key: String): Boolean {
+        val raw = src.getString(key, null) ?: return true
+        val moved = dst.contains(key) || dst.edit().putString(key, raw).commit()
+        return moved && src.edit().remove(key).commit()
+    }
+
     @Synchronized
     private fun samples(ctx: Context): MutableList<Sample> {
         samplesCache?.let { return it }
+        migrateSamples(ctx)
         val out = mutableListOf<Sample>()
         runCatching {
-            val a = JSONArray(ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("samples", null) ?: "[]")
+            val a = JSONArray(ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE).getString(KEY_SAMPLES, null) ?: "[]")
             for (i in 0 until a.length()) {
                 val o = a.getJSONArray(i)
                 out += Sample(o.getDouble(0), o.getDouble(1), o.getDouble(2).toFloat(), o.getLong(3))
@@ -147,7 +174,7 @@ object Places {
         while (l.size > MAX_SAMPLES) l.removeAt(0)
         val a = JSONArray()
         l.forEach { a.put(JSONArray().put(it.lat).put(it.lng).put(it.acc.toDouble()).put(it.t)) }
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("samples", a.toString()).apply()
+        ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE).edit().putString(KEY_SAMPLES, a.toString()).apply()
         derivedCache = null; derivedBest = null
     }
 
@@ -277,6 +304,7 @@ object Places {
         val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val keep = Kind.values().mapNotNull { k -> sp.getString(manualKey(k), null)?.let { manualKey(k) to it } }
         sp.edit().clear().apply { keep.forEach { (k, v) -> putString(k, v) } }.apply()
+        ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE).edit().clear().apply()
     }
 
     fun text(l: Label): String? = when (l) {

@@ -42,6 +42,7 @@ internal object PermId {
     const val POWER_SAVE = "power_save"
     const val NOTIF_LISTENER = "notif_listener"
     const val A11Y = "a11y"
+    const val BACKUP = "backup"
 }
 
 internal fun granted(ctx: Context, p: String) = ctx.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
@@ -138,6 +139,12 @@ internal fun permChecks(ctx: Context, request: (Array<String>) -> Unit, changed:
     out += Perm(PermId.POWER_SAVE, "省电模式", if (pm?.isPowerSaveMode == true) "正在开启：会推迟定位和闹钟，通勤时段建议关闭" else "未开启",
         pm?.isPowerSaveMode != true, group = PermGroup.INFO, actionLabel = "去设置",
         action = { open(Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)) })
+    val backup = com.busnotice.commute.SystemBackup.enabled(ctx)
+    out += Perm(PermId.BACKUP, "系统备份",
+        if (backup) "已开启：行程、设置和学习结果会进入手机云备份和换机迁移（原始定位记录不备份）"
+        else "已关闭：换机或恢复手机时不带走本 App 的数据",
+        true, group = PermGroup.INFO, actionLabel = if (backup) "关闭" else "开启",
+        action = { com.busnotice.commute.SystemBackup.setEnabled(ctx, !backup); changed() })
     return out
 }
 

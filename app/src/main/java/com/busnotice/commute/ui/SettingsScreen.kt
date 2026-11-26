@@ -8,10 +8,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import android.widget.Toast
+import androidx.compose.ui.unit.sp
 import com.busnotice.commute.Places
 import com.busnotice.commute.Transit
 
-/** 设置：家和公司、线路数据、设置检查、首次引导 */
+/** 设置：家和公司、线路数据、设置检查、首次引导、系统备份 */
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
@@ -44,6 +45,25 @@ fun SettingsScreen(
         }
         if (onOnboarding != null) item {
             GlassRow(headline = "重看首页介绍", supporting = "回到首页重新逐项介绍，已有的行程和设置不受影响", onClick = onOnboarding)
+        }
+        sectionHeader("备份")
+        item {
+            var backupOn by remember { mutableStateOf(com.busnotice.commute.SystemBackup.enabled(ctx)) }
+            GlassRow(
+                headline = "参与系统备份",
+                onClick = { backupOn = !backupOn; com.busnotice.commute.SystemBackup.setEnabled(ctx, backupOn) },
+                supportingContent = {
+                    androidx.compose.material3.Text(
+                        "开启后，行程、设置和学习结果会随手机云备份和换机迁移恢复；原始定位记录不备份。关闭后，下一次系统备份起不再带走本 App 的数据。",
+                        fontSize = 13.sp, lineHeight = 18.sp, color = Fuse.dim(dark),
+                    )
+                },
+                trailing = {
+                    androidx.compose.material3.Switch(checked = backupOn, onCheckedChange = {
+                        backupOn = it; com.busnotice.commute.SystemBackup.setEnabled(ctx, it)
+                    })
+                },
+            )
         }
         sectionHeader("学习数据")
         item {

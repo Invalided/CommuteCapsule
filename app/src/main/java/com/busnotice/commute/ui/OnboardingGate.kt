@@ -9,7 +9,7 @@ package com.busnotice.commute.ui
  */
 object OnboardingGate {
     /** 参与判断的 SharedPreferences 文件 */
-    val PREF_FILES = listOf("places", "learn", "learn_ride2", "learn_bus_speed", "learn_metro")
+    val PREF_FILES = listOf("places", "place_samples", "learn", "learn_ride2", "learn_bus_speed", "learn_metro")
 
     /**
      * 各文件中不属于用户数据的键：
