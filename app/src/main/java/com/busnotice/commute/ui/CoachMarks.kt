@@ -126,7 +126,10 @@ private val Scrim = Color(0xFF0F0F18).copy(alpha = 0.66f)
  * 遮罩拦截所有点击（点遮罩不关闭），只能通过气泡里的按钮或返回键（等同「跳过」）操作。
  */
 @Composable
-fun CoachMarks(targets: CoachTargets, step: CoachStep, onStep: (CoachStep) -> Unit, onDone: () -> Unit) {
+fun CoachMarks(
+    targets: CoachTargets, step: CoachStep, onStep: (CoachStep) -> Unit, onDone: () -> Unit,
+    onImport: (() -> Unit)? = null,
+) {
     val toStep by rememberUpdatedState(onStep)
     val done by rememberUpdatedState(onDone)
     val target = targets.rects[step]
@@ -192,6 +195,8 @@ fun CoachMarks(targets: CoachTargets, step: CoachStep, onStep: (CoachStep) -> Un
         Layout(
             content = {
                 CoachBubble(copy, dot, dots, last, dark,
+                    // 只在第一步提供「从旧手机搬过来」，换机用户不必先走完引导
+                    onImport = if (dot == 0) onImport else null,
                     onSkip = { done() },
                     onNext = { CoachFlow.firstAvailable(CoachFlow.next(step), available)?.let { toStep(it) } ?: done() })
             },
@@ -228,7 +233,7 @@ private fun DrawScope.drawHole(r: Rect, circle: Boolean, maxCorner: Float, color
 
 @Composable
 private fun CoachBubble(
-    copy: CoachCopy, dot: Int, dots: Int, last: Boolean, dark: Boolean, onSkip: () -> Unit, onNext: () -> Unit,
+    copy: CoachCopy, dot: Int, dots: Int, last: Boolean, dark: Boolean, onImport: (() -> Unit)?, onSkip: () -> Unit, onNext: () -> Unit,
 ) {
     val ink = Fuse.ink(dark)
     val dim = Fuse.dim(dark)
@@ -239,7 +244,11 @@ private fun CoachBubble(
         Text(copy.title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = ink)
         Spacer(Modifier.height(6.dp))
         Text(copy.body, fontSize = 14.sp, lineHeight = 20.sp, color = dim)
-        Spacer(Modifier.height(10.dp))
+        if (onImport != null) {
+            TextButton(onClick = onImport, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp)) {
+                Text("换了新手机？从旧手机搬过来", color = Fuse.accent(dark), fontSize = 14.sp)
+            }
+        } else Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 repeat(dots) { i ->

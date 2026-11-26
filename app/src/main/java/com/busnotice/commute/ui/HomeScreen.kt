@@ -92,6 +92,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun HomeScreen(
     resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit, onSettings: () -> Unit = {},
+    onImport: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
@@ -124,6 +125,9 @@ fun HomeScreen(
     var menuOpen by remember { mutableStateOf(false) }
     var sourceOpen by remember { mutableStateOf(false) }
     var permSheet by remember { mutableStateOf(false) }
+    // 从迁移文件恢复后首页提示一次，可撤销
+    var importedNotice by remember(resumeTick) { mutableStateOf(com.busnotice.commute.MigrationStore.noticePending(ctx)) }
+    var undoOpen by remember { mutableStateOf(false) }
     // 当前用演示数据时首页提示；切换后立即刷新。点「稍后」存本机，切回演示数据时重新显示
     var dataVer by remember { mutableStateOf(0) }
     val usingDemoData = remember(resumeTick, dataVer, sourceOpen) { com.busnotice.commute.Transit.usingDemo }
@@ -307,7 +311,16 @@ fun HomeScreen(
                                 scope.launch { snack.showSnackbar("已切换到边用边学：添加线路时可以直接记下线路名和站名") }
                             },
                             onLater = { com.busnotice.commute.Transit.snoozeDemoHint(ctx); demoHintLater = true },
+                            onImport = onImport,
                         )
+                    }
+                    idx++
+                }
+                if (!demoOn && importedNotice) {
+                    item(key = "imported") {
+                        ImportedNotice(dark, com.busnotice.commute.MigrationStore.importedTrips(ctx),
+                            onUndo = { undoOpen = true },
+                            onDismiss = { com.busnotice.commute.MigrationStore.dismissNotice(ctx); importedNotice = false })
                     }
                     idx++
                 }
@@ -421,6 +434,7 @@ fun HomeScreen(
     }
 
     if (sourceOpen) SourceDialog(dark) { sourceOpen = false }
+    if (undoOpen) UndoImportDialog { undoOpen = false }
 
     confirmSwitch?.let { t ->
         val curName = CommuteService.runningTripId()?.let { id -> trips.firstOrNull { it.id == id }?.name } ?: "另一趟行程"
@@ -471,7 +485,7 @@ fun HomeScreen(
 
 /** 当前用的是虚构演示数据：说明搜不到真实线路，并可一键切换到「边用边学」 */
 @Composable
-private fun DemoDataNotice(dark: Boolean, onSwitch: () -> Unit, onLater: () -> Unit) {
+private fun DemoDataNotice(dark: Boolean, onSwitch: () -> Unit, onLater: () -> Unit, onImport: () -> Unit) {
     val ink = Fuse.ink(dark)
     Column(
         Modifier.fillMaxWidth().glass(dark)
@@ -490,6 +504,9 @@ private fun DemoDataNotice(dark: Boolean, onSwitch: () -> Unit, onLater: () -> U
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PillButton(onClick = onSwitch) { Text("切换到边用边学") }
             PillButton(secondary = true, onClick = onLater) { Text("稍后") }
+        }
+        TextButton(onClick = onImport, contentPadding = PaddingValues(horizontal = 0.dp)) {
+            Text("换了新手机？从旧手机搬过来", fontSize = 13.sp, color = Fuse.accent(dark))
         }
     }
 }

@@ -37,6 +37,7 @@ https://github.com/user-attachments/assets/ed941a36-0ca4-4f84-857b-b4fdbf0b71c9
 - **三级降级**：实时到站 → 本机学到的时刻表 → 按站距和间隔的先验估算；没有实时数据也能用
 - **省电与保活**：精确闹钟分段唤醒、熄屏冻结检测、被杀后恢复且不重复提醒
 - **回放**：行程记录可导出，用于离线回放和回归测试；内置演示回放（虚构数据）
+- **换机迁移**：在设置中导出加密的迁移文件，在新手机上用恢复码（文字或二维码）导入；可选包含行程轨迹和原始定位，导入后可撤销一次
 
 ## 架构
 
@@ -62,7 +63,7 @@ cp -r examples/json-source app/src/extra   # 复制模板
 
 ## 权限与隐私
 
-每个权限的用途见 [PRIVACY.md](PRIVACY.md)。所有记录存在本机，只有你主动导出时才会离开手机。
+每个权限的用途见 [PRIVACY.md](PRIVACY.md)。所有记录存在本机，只有你主动导出时才会离开手机；迁移文件以恢复码派生的密钥加密，恢复码不写入文件。
 
 ## 构建
 
@@ -72,4 +73,4 @@ cp -r examples/json-source app/src/extra   # 复制模板
 
 ## 许可
 
-[AGPL-3.0](LICENSE)。
+[AGPL-3.0](LICENSE)。使用的第三方库（AndroidX、Kotlin 协程、ZXing core）均为 Apache-2.0 许可。

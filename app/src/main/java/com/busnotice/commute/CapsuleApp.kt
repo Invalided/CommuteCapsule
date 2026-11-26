@@ -12,6 +12,7 @@ class CapsuleApp : Application() {
             runCatching { TraceStore.migrateAll(this) }
             runCatching { Places.encryptStoredSamples(this) }
             runCatching { TraceStore.refreshLocked(this) }
+            runCatching { MigrationStore.expireUndo(this) }
         }, "local-crypto").start()
     }
 }

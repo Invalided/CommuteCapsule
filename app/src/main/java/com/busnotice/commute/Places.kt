@@ -208,6 +208,10 @@ object Places {
         return l.takeLast(MAX_SAMPLES).toMutableList()
     }
 
+    /** 当前可读的全部原始采样（明文 JSON，迁移文件用）；没有采样时返回 null */
+    @Synchronized
+    fun samplesJson(ctx: Context): String? = samples(ctx).takeIf { it.isNotEmpty() }?.let { toJson(it).toString() }
+
     /** 保留区与当前值中所用密钥的标识（用于统计无法读取的采样） */
     fun sampleKeyIds(ctx: Context): Set<String> {
         val sp = ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE)

@@ -45,6 +45,10 @@ fun App(resumeTick: Int) {
     // 进入编辑页时的行程：用来判断返回时有没有未保存的改动
     var baseline by remember { mutableStateOf<Trip?>(null) }
     var confirmLeave by remember { mutableStateOf(false) }
+    // 从迁移文件恢复：首页演示数据卡、首次引导第一步与设置页都能打开；从引导打开且未导入时回到引导
+    var importOpen by remember { mutableStateOf(false) }
+    var importFromCoach by remember { mutableStateOf(false) }
+    fun openImport(fromCoach: Boolean) { importFromCoach = fromCoach; if (fromCoach) coachOn = false; importOpen = true }
 
     fun openEditor(t: Trip) { draft = t; baseline = t; screen = Screen.Edit }
     fun leaveEditor() {
@@ -91,6 +95,7 @@ fun App(resumeTick: Int) {
                     onNew = { openEditor(Trip(legs = listOf(Leg(emptyList())))) },
                     onEdit = { openEditor(it) },
                     onSettings = { screen = Screen.Settings },
+                    onImport = { openImport(false) },
                 )
                 Screen.Settings -> SettingsScreen(
                     onBack = { screen = Screen.Home },
@@ -98,6 +103,7 @@ fun App(resumeTick: Int) {
                     onOnboarding = {
                         OnboardingState.replay(ctx); coachStep = OnboardingState.step(ctx); coachOn = true; screen = Screen.Home
                     },
+                    onImport = { openImport(false) },
                 )
                 Screen.Checks -> SetupScreen(resumeTick) { screen = Screen.Settings }
                 Screen.Edit -> TripEditor(
@@ -129,8 +135,13 @@ fun App(resumeTick: Int) {
                     step = coachStep,
                     onStep = { coachStep = it; OnboardingState.saveStep(ctx, it) },
                     onDone = { coachOn = false; OnboardingState.finish(ctx) },
+                    onImport = { openImport(true) },
                 )
             }
+            if (importOpen) ImportMigrationFlow(onClose = {
+                importOpen = false
+                if (importFromCoach) { importFromCoach = false; coachOn = true }
+            })
         }
     }
 

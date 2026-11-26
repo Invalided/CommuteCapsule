@@ -188,6 +188,12 @@ object LocalCrypto {
         return d.text
     }
 
+    /** 逐行读取并返回跳过的条数（导出迁移文件用） */
+    fun decodeCounted(ctx: Context, lines: List<String>): Decoded {
+        if (lines.any { RecordFormat.isEncrypted(it) }) cipher(ctx)
+        return RecordCodec.decodeLines(lines) { readers[it] }
+    }
+
     private fun noteUnreadable(ctx: Context) {
         if (unreadableNoted) return
         unreadableNoted = true

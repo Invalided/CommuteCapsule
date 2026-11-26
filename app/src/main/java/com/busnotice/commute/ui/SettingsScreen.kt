@@ -18,12 +18,16 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onChecks: (() -> Unit)? = null,
     onOnboarding: (() -> Unit)? = null,
+    onImport: (() -> Unit)? = null,
 ) {
     val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
     var sourceOpen by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     var resetVer by remember { mutableStateOf(0) }
+    var exportOpen by remember { mutableStateOf(false) }
+    var undoOpen by remember { mutableStateOf(false) }
+    val undoAt = remember(undoOpen) { com.busnotice.commute.MigrationStore.undoAt(ctx) }
     GlassPage(title = "设置", onBack = onBack) {
         sectionHeader("家和公司")
         item { androidx.compose.runtime.key(resetVer) { PlacesSetup() } }
@@ -65,6 +69,22 @@ fun SettingsScreen(
                 },
             )
         }
+        sectionHeader("迁移")
+        item {
+            GlassRow(headline = "迁移到新手机",
+                supporting = "导出加密的迁移文件和恢复码：行程、设置、学习结果，可选包含行程轨迹和原始定位",
+                onClick = { exportOpen = true })
+        }
+        if (onImport != null) item {
+            GlassRow(headline = "从迁移文件恢复", supporting = "用旧手机导出的迁移文件和恢复码替换这台手机上的数据",
+                onClick = onImport)
+        }
+        if (undoAt != null) item {
+            GlassRow(headline = "撤销上次导入",
+                supporting = "恢复到 " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(undoAt)) +
+                    " 导入之前的数据；导入后 7 天内可撤销一次",
+                onClick = { undoOpen = true })
+        }
         sectionHeader("学习数据")
         item {
             GlassRow(headline = "重置自动学习的常去地点", supporting = "清空自动学到的家和公司，手动设置的保留",
@@ -72,6 +92,8 @@ fun SettingsScreen(
         }
     }
     if (sourceOpen) SourceDialog(dark) { sourceOpen = false }
+    if (exportOpen) ExportMigrationDialog { exportOpen = false }
+    if (undoOpen) UndoImportDialog { undoOpen = false }
     if (confirmReset) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { confirmReset = false },
