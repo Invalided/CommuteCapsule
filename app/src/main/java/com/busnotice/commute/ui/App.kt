@@ -30,7 +30,7 @@ sealed interface Screen {
     data class PickMetro(val legIndex: Int) : Screen
     data class EditShuttle(val legIndex: Int, val candidateIndex: Int) : Screen
     data object Settings : Screen
-    data class Keepalive(val fromSettings: Boolean) : Screen
+    data object Checks : Screen
 }
 
 @Composable
@@ -75,10 +75,10 @@ fun App(resumeTick: Int) {
     }
 
     BackHandler(enabled = screen != Screen.Home) {
-        when (val s = screen) {
+        when (screen) {
             Screen.Edit -> leaveEditor()
             Screen.Settings -> screen = Screen.Home
-            is Screen.Keepalive -> screen = if (s.fromSettings) Screen.Settings else Screen.Home
+            Screen.Checks -> screen = Screen.Settings
             else -> screen = Screen.Edit
         }
     }
@@ -91,18 +91,15 @@ fun App(resumeTick: Int) {
                     onNew = { openEditor(Trip(legs = listOf(Leg(emptyList())))) },
                     onEdit = { openEditor(it) },
                     onSettings = { screen = Screen.Settings },
-                    onKeepalive = { screen = Screen.Keepalive(fromSettings = false) },
                 )
                 Screen.Settings -> SettingsScreen(
                     onBack = { screen = Screen.Home },
-                    onKeepalive = { screen = Screen.Keepalive(fromSettings = true) },
+                    onChecks = { screen = Screen.Checks },
                     onOnboarding = {
                         OnboardingState.replay(ctx); coachStep = OnboardingState.step(ctx); coachOn = true; screen = Screen.Home
                     },
                 )
-                is Screen.Keepalive -> KeepaliveScreen(resumeTick) {
-                    screen = if (s.fromSettings) Screen.Settings else Screen.Home
-                }
+                Screen.Checks -> SetupScreen(resumeTick) { screen = Screen.Settings }
                 Screen.Edit -> TripEditor(
                     trip = draft,
                     onChange = { draft = it },

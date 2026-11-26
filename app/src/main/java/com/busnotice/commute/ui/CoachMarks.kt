@@ -103,7 +103,7 @@ private fun copyOf(step: CoachStep) = when (step) {
     )
     CoachStep.CHECKS -> CoachCopy(
         "提醒准不准，看这里",
-        "缺哪些权限都列在这，不用一次开完，用到时也会再提醒你。",
+        "缺哪些权限和后台设置都列在这，不用一次开完，用到时也会再提醒你。",
     )
     CoachStep.MENU -> CoachCopy(
         "其他都在这",

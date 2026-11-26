@@ -11,11 +11,11 @@ import android.widget.Toast
 import com.busnotice.commute.Places
 import com.busnotice.commute.Transit
 
-/** 设置：家和公司、线路数据、后台保活体检、首次引导 */
+/** 设置：家和公司、线路数据、设置检查、首次引导 */
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
-    onKeepalive: (() -> Unit)? = null,
+    onChecks: (() -> Unit)? = null,
     onOnboarding: (() -> Unit)? = null,
 ) {
     val ctx = LocalContext.current
@@ -38,9 +38,9 @@ fun SettingsScreen(
                 onClick = { sourceOpen = true },
             )
         }
-        if (onKeepalive != null || onOnboarding != null) sectionHeader("后台与引导")
-        if (onKeepalive != null) item {
-            GlassRow(headline = "后台保活体检", supporting = "检查系统和手机厂商的后台设置", onClick = onKeepalive)
+        if (onChecks != null || onOnboarding != null) sectionHeader("权限与引导")
+        if (onChecks != null) item {
+            GlassRow(headline = "设置检查", supporting = "权限、电池与手机厂商的后台设置，与首页「设置检查」相同", onClick = onChecks)
         }
         if (onOnboarding != null) item {
             GlassRow(headline = "重看首页介绍", supporting = "回到首页重新逐项介绍，已有的行程和设置不受影响", onClick = onOnboarding)

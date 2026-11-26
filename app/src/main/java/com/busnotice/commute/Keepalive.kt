@@ -1,20 +1,17 @@
 package com.busnotice.commute
 
-import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.os.PowerManager
 import android.provider.Settings
 
 /**
- * 后台保活体检：按手机品牌列出需要用户在系统里手动打开的后台设置，并尽量直接跳到对应页面。
+ * 手机厂商的后台设置（并入首页「设置检查」）：按手机品牌列出需要用户在系统里手动打开的后台设置，并尽量直接跳到对应页面。
  *
  * - 厂商设置页的组件名随系统版本变化，跳不过去时依次退到「应用详情」、系统设置首页，并提示在设置里搜索什么；
- * - 这些厂商设置 App 读不到，由用户设置后自己勾「已设置」，结果只存本机；
- * - 系统能读到的项（电池优化、后台限制、省电模式）由 [readable] 给出。
+ * - 这些厂商设置 App 读不到，由用户设置后自己勾「已设置」，结果只存本机。
  */
 object Keepalive {
     enum class Brand(val title: String) {
@@ -126,29 +123,6 @@ object Keepalive {
 
     fun setDone(ctx: Context, id: String, done: Boolean) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("done_$id", done).apply()
-    }
-
-    /** 本机品牌的专项里已勾选的项数 / 总项数 */
-    fun brandProgress(ctx: Context, b: Brand = brand()): Pair<Int, Int> {
-        val s = steps(b)
-        return s.count { isDone(ctx, it.id) } to s.size
-    }
-
-    // ---------- 系统能读到的项 ----------
-    data class Check(val id: String, val title: String, val desc: String, val ok: Boolean, val target: Target)
-
-    fun readable(ctx: Context): List<Check> {
-        val pm = ctx.getSystemService(PowerManager::class.java)
-        val am = ctx.getSystemService(ActivityManager::class.java)
-        val out = mutableListOf<Check>()
-        out += Check("battery_opt", "系统电池优化：不优化", "允许后添加到电池优化白名单，系统空闲时也能准时唤醒。",
-            pm?.isIgnoringBatteryOptimizations(ctx.packageName) == true,
-            Target(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri = true))
-        out += Check("bg_restricted", "后台活动未被限制", "被限制时，行程中会被系统停掉。在应用详情 → 电池里解除限制。",
-            am?.isBackgroundRestricted != true, APP_DETAILS)
-        out += Check("power_save", "省电模式已关闭", "省电模式会推迟定位和闹钟，通勤时段建议关闭。",
-            pm?.isPowerSaveMode != true, Target(Settings.ACTION_BATTERY_SAVER_SETTINGS))
-        return out
     }
 
     // ---------- 跳转 ----------

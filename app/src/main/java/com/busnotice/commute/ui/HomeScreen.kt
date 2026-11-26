@@ -37,7 +37,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -92,7 +91,7 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
-    resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit, onSettings: () -> Unit = {}, onKeepalive: () -> Unit = {},
+    resumeTick: Int, onNew: () -> Unit, onEdit: (Trip) -> Unit, onSettings: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
@@ -131,9 +130,9 @@ fun HomeScreen(
     val usingDemoData = remember(resumeTick, dataVer, sourceOpen) { com.busnotice.commute.Transit.usingDemo }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { version++ }
-    val perms = remember(resumeTick, version) { permChecks(ctx) { p -> permLauncher.launch(p) } }
+    val perms = remember(resumeTick, version) { permChecks(ctx, { p -> permLauncher.launch(p) }) { version++ } }
+    val batch = remember(resumeTick, version) { batchPermissions(ctx) }
     val days = remember(resumeTick) { com.busnotice.commute.TraceLog.dayCount(ctx) }
-    val keepalive = remember(resumeTick) { com.busnotice.commute.Keepalive.brandProgress(ctx) }
     val diag = remember(resumeTick, version) { com.busnotice.commute.Diag.last(ctx) }
 
     // 进程重启后内存里的看板是空的：先用本地存的那份顶上；还没有的话显示「正在恢复…」，30 秒后服务还没起来就不再显示
@@ -288,8 +287,8 @@ fun HomeScreen(
                     val name = board?.tripName ?: trips.firstOrNull { it.id == pendingTrip }?.name ?: "通勤"
                     item(key = "live") { RestoringBoard(name, dark) }
                 }
-                // 缺必需设置时放上面显眼处，全齐了就放到列表最后
-                val permUrgent = perms.any { !it.granted && !it.optional }
+                // 缺必需设置时放上面显眼处；必需项都齐了（只差手机厂商设置或可选项）就放到列表最后
+                val permUrgent = summaryOf(perms).urgent
                 if (permUrgent) item(key = "perm") { PermRow(perms, dark, Modifier.coachTarget(CoachStep.CHECKS)) { permSheet = true } }
                 if (!demoOn && trips.isEmpty()) item {
                     Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -348,10 +347,6 @@ fun HomeScreen(
                     )
                 }
                 if (!permUrgent && perms.isNotEmpty()) item(key = "perm") { PermRow(perms, dark, Modifier.coachTarget(CoachStep.CHECKS)) { permSheet = true } }
-                // 手机厂商的后台设置还没全部勾选：一直在列表末尾提示，点进体检页
-                if (!demoOn && keepalive.first < keepalive.second) item(key = "keepalive") {
-                    KeepaliveRow(keepalive.first, keepalive.second, dark, onKeepalive)
-                }
             }
         }
     }
@@ -361,7 +356,7 @@ fun HomeScreen(
             onDismissRequest = { permSheet = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = Fuse.surface(dark), contentColor = ink,
-        ) { PermSheet(perms) }
+        ) { PermSheet(perms, onBatch = if (batch.isNotEmpty()) ({ permLauncher.launch(batch) }) else null) }
     }
 
     if (sourceOpen) SourceDialog(dark) { sourceOpen = false }
@@ -456,28 +451,13 @@ private fun PlaceChip(text: String, dark: Boolean, modifier: Modifier = Modifier
     }
 }
 
-/** 后台保活体检一行：「后台保活体检  N / M ›」 */
-@Composable
-private fun KeepaliveRow(done: Int, total: Int, dark: Boolean, onOpen: () -> Unit) {
-    val ink = Fuse.ink(dark)
-    Row(
-        Modifier.fillMaxWidth().glass(dark).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text("后台保活体检", fontSize = 14.sp, color = ink)
-            Text("手机厂商的后台设置，影响提醒是否准时", fontSize = 12.sp, color = Fuse.dim(dark))
-        }
-        Text("$done / $total ›", fontSize = 14.sp, color = ink, style = TextStyle(fontFeatureSettings = "tnum"))
-    }
-}
-
 /** 设置检查一行：「设置检查  N / M ›」，缺必需项时显示琥珀色提示 */
 @Composable
 private fun PermRow(perms: List<Perm>, dark: Boolean, modifier: Modifier = Modifier, onOpen: () -> Unit) {
     val ink = Fuse.ink(dark)
-    val ok = perms.count { it.granted }
-    val missing = perms.count { !it.granted && !it.optional }
+    val sum = summaryOf(perms)
+    val ok = sum.ok
+    val missing = sum.missing
     Row(
         Modifier.fillMaxWidth().then(modifier).glass(dark).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -490,45 +470,19 @@ private fun PermRow(perms: List<Perm>, dark: Boolean, modifier: Modifier = Modif
             Text("还差 $missing 项设置", fontSize = 13.sp, color = Fuse.Amber, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(10.dp))
         }
-        Text("$ok / ${perms.size} ›", fontSize = 14.sp, color = ink, style = TextStyle(fontFeatureSettings = "tnum"))
+        Text("$ok / ${sum.total} ›", fontSize = 14.sp, color = ink, style = TextStyle(fontFeatureSettings = "tnum"))
     }
 }
 
 @Composable
-private fun PermSheet(perms: List<Perm>) {
+private fun PermSheet(perms: List<Perm>, onBatch: (() -> Unit)?) {
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
             .padding(start = 20.dp, end = 20.dp, bottom = 24.dp).navigationBarsPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("设置检查", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        perms.filter { !it.optional }.forEach { PermItem(it) }
-        val opt = perms.filter { it.optional }
-        if (opt.isNotEmpty()) {
-            Text("可选", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp))
-            opt.forEach { PermItem(it) }
-        }
-    }
-}
-
-@Composable
-private fun PermItem(p: Perm) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(p.title, style = MaterialTheme.typography.bodyLarge)
-            Text(p.desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Spacer(Modifier.width(8.dp))
-        if (p.granted) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Check, null, tint = Fuse.BusGreen, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("已开启", style = MaterialTheme.typography.labelLarge, color = Fuse.BusGreen)
-            }
-        } else {
-            PillButton(onClick = p.action) { Text("去开启") }
-        }
+        SetupChecks(perms, onBatch)
     }
 }
 
