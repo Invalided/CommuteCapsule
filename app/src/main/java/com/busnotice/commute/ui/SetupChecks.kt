@@ -65,7 +65,22 @@ private fun Group(title: String, items: List<Perm>) {
 }
 
 @Composable
-private fun PermItem(p: Perm) {
+private fun PermItem(perm: Perm) {
+    var asking by remember { mutableStateOf(false) }
+    // 需要确认的操作：先弹确认框
+    val p = if (perm.confirm != null && perm.action != null) perm.copy(action = { asking = true }) else perm
+    if (asking && perm.confirm != null) {
+        val dark = androidx.compose.foundation.isSystemInDarkTheme()
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { asking = false },
+            shape = DialogShape, containerColor = Fuse.surface(dark),
+            titleContentColor = Fuse.ink(dark), textContentColor = Fuse.ink(dark),
+            title = { Text(perm.actionLabel + "？") },
+            text = { Text(perm.confirm) },
+            confirmButton = { DialogButton("删除", primary = true, onClick = { asking = false; perm.action?.invoke() }) },
+            dismissButton = { DialogButton("取消", onClick = { asking = false }) },
+        )
+    }
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {

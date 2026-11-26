@@ -32,6 +32,8 @@ object Places {
     const val SAMPLE_PREFS = "place_samples"
     private const val KEY_SAMPLES = "samples"
     private const val KEY_SNAPSHOT = "sample_snapshot"
+    /** 所用密钥暂时无法读取的采样，原样保留，密钥恢复后合并回来 */
+    private const val KEY_LOCKED = "samples_locked"
     private const val MERGE_M = 150.0
     private const val NEED_VOTES = 3
     private const val NEED_DAYS = 2
@@ -125,6 +127,7 @@ object Places {
     private const val MAX_SAMPLES = 800
     private const val NEED_SAMPLE_DAYS = 3
     private var samplesCache: MutableList<Sample>? = null
+    private var samplesVersion = -1
     private var derivedCache: Map<Kind, Spot>? = null
     private var derivedBest: Map<Kind, Int>? = null
     private var snapshotCache: Map<Kind, Snap>? = null
@@ -151,25 +154,77 @@ object Places {
 
     @Synchronized
     private fun samples(ctx: Context): MutableList<Sample> {
+        if (samplesVersion != LocalCrypto.keysVersion) samplesCache = null
         samplesCache?.let { return it }
         migrateSamples(ctx)
         val sp = ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE)
-        val stored = sp.getString(KEY_SAMPLES, null)
-        // 无法解密（密钥已更换）时按没有采样处理，之后的采样用新密钥覆盖写入；
-        // 密钥暂不可用时不缓存，避免之后用空列表覆盖已保存的采样
+        var stored = sp.getString(KEY_SAMPLES, null)
         val plain = stored?.let { LocalCrypto.decode(ctx, it) }
+        // 密钥暂不可用时不缓存，避免之后用空列表覆盖已保存的采样
         if (stored != null && plain == null && !LocalCrypto.ready(ctx)) return mutableListOf()
+        val out = parseSamples(plain)
+        if (stored != null && plain == null) {
+            // 所用密钥暂时无法读取：原值移到保留区，不覆盖、不删除；新采样从空开始，旧密钥恢复后合并回来
+            val locked = (sp.getStringSet(KEY_LOCKED, null) ?: emptySet()) + stored
+            if (sp.edit().putStringSet(KEY_LOCKED, locked).remove(KEY_SAMPLES).commit()) stored = null
+            else return out
+        }
+        // 保留区中已经能读的采样合并回来
+        val locked = sp.getStringSet(KEY_LOCKED, null).orEmpty()
+        if (locked.isNotEmpty()) {
+            val back = locked.mapNotNull { r -> LocalCrypto.decode(ctx, r)?.let { r to parseSamples(it) } }
+            if (back.isNotEmpty()) {
+                val merged = mergeSamples(out, back.flatMap { it.second }, System.currentTimeMillis())
+                val e = sp.edit().putStringSet(KEY_LOCKED, locked - back.map { it.first }.toSet())
+                LocalCrypto.encrypt(ctx, toJson(merged).toString())?.let { e.putString(KEY_SAMPLES, it) }
+                if (e.commit()) { out.clear(); out += merged; stored = null }
+            }
+        }
+        encryptPlain(ctx, sp, stored)
+        samplesCache = out
+        samplesVersion = LocalCrypto.keysVersion
+        return out
+    }
+
+    private fun parseSamples(json: String?): MutableList<Sample> {
         val out = mutableListOf<Sample>()
         runCatching {
-            val a = JSONArray(plain ?: "[]")
+            val a = JSONArray(json ?: "[]")
             for (i in 0 until a.length()) {
                 val o = a.getJSONArray(i)
                 out += Sample(o.getDouble(0), o.getDouble(1), o.getDouble(2).toFloat(), o.getLong(3))
             }
         }
-        encryptPlain(ctx, sp, stored)
-        samplesCache = out
         return out
+    }
+
+    private fun toJson(l: List<Sample>) = JSONArray().also { a ->
+        l.forEach { a.put(JSONArray().put(it.lat).put(it.lng).put(it.acc.toDouble()).put(it.t)) }
+    }
+
+    /** 合并两组采样：按时间去重排序，按保留期和条数上限裁剪 */
+    internal fun mergeSamples(a: List<Sample>, b: List<Sample>, now: Long): MutableList<Sample> {
+        val l = (a + b).distinctBy { it.t }.sortedBy { it.t }.filter { now - it.t <= KEEP_DAYS * 86_400_000L }
+        return l.takeLast(MAX_SAMPLES).toMutableList()
+    }
+
+    /** 保留区与当前值中所用密钥的标识（用于统计无法读取的采样） */
+    fun sampleKeyIds(ctx: Context): Set<String> {
+        val sp = ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE)
+        return (sp.getStringSet(KEY_LOCKED, null).orEmpty() + listOfNotNull(sp.getString(KEY_SAMPLES, null)))
+            .mapNotNull { RecordFormat.keyIdOf(it) }.toSet()
+    }
+
+    /** 删除所用密钥已不可恢复的采样（只由用户确认后调用） */
+    @Synchronized
+    fun purgeLostSamples(ctx: Context, isLost: (String) -> Boolean) {
+        val sp = ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE)
+        val locked = sp.getStringSet(KEY_LOCKED, null).orEmpty()
+        val keep = locked.filter { RecordFormat.keyIdOf(it)?.let(isLost) != true }.toSet()
+        val e = sp.edit().putStringSet(KEY_LOCKED, keep)
+        sp.getString(KEY_SAMPLES, null)?.let { if (RecordFormat.keyIdOf(it)?.let(isLost) == true) e.remove(KEY_SAMPLES) }
+        e.commit()
+        samplesCache = null
     }
 
     /** 旧版本的明文采样：转为密文后用 commit 整体替换，失败时明文保留，下次再转 */
@@ -196,10 +251,8 @@ object Places {
         l += Sample(lat, lng, acc, at)
         l.removeAll { now - it.t > KEEP_DAYS * 86_400_000L }
         while (l.size > MAX_SAMPLES) l.removeAt(0)
-        val a = JSONArray()
-        l.forEach { a.put(JSONArray().put(it.lat).put(it.lng).put(it.acc.toDouble()).put(it.t)) }
         // 密钥不可用时只留在内存，不以明文落盘
-        LocalCrypto.encrypt(ctx, a.toString())?.let {
+        LocalCrypto.encrypt(ctx, toJson(l).toString())?.let {
             ctx.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE).edit().putString(KEY_SAMPLES, it).apply()
         }
         derivedCache = null; derivedBest = null

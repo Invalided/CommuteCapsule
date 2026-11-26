@@ -27,6 +27,8 @@ internal data class Perm(
     val actionLabel: String = "去开启",
     val action: (() -> Unit)? = null,
     val toggle: (() -> Unit)? = null,
+    /** 非空时，点操作按钮先弹出确认框，内容为此文字 */
+    val confirm: String? = null,
 ) {
     val optional: Boolean get() = group == PermGroup.OPTIONAL
 }
@@ -43,6 +45,7 @@ internal object PermId {
     const val NOTIF_LISTENER = "notif_listener"
     const val A11Y = "a11y"
     const val BACKUP = "backup"
+    const val LOCKED = "locked_records"
 }
 
 internal fun granted(ctx: Context, p: String) = ctx.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
@@ -145,7 +148,38 @@ internal fun permChecks(ctx: Context, request: (Array<String>) -> Unit, changed:
         else "已关闭：换机或恢复手机时不带走本 App 的数据",
         true, group = PermGroup.INFO, actionLabel = if (backup) "关闭" else "开启",
         action = { com.busnotice.commute.SystemBackup.setEnabled(ctx, !backup); changed() })
+    lockedRecordsCheck(ctx, changed)?.let { out += it }
     return out
+}
+
+/**
+ * 系统清空了本机加密密钥、旧记录已无法读取时的提示（不计入完成度）。统计由后台完成，这里只读结果；
+ * 删除只在用户确认后进行，不自动删除。
+ */
+private fun lockedRecordsCheck(ctx: Context, changed: () -> Unit): Perm? {
+    val summary = com.busnotice.commute.TraceStore.locked ?: return null
+    val st = com.busnotice.commute.LocalCrypto.status(ctx) ?: return null
+    val isLost = { id: String -> com.busnotice.commute.LockedRecords.isLost(id, st.readable, st.pending, st.lost) }
+    val samplesLost = com.busnotice.commute.Places.sampleKeyIds(ctx).any(isLost)
+    val days = summary.lostDays.size
+    if (days == 0 && !samplesLost) return null
+    val what = buildList {
+        if (days > 0) add("$days 天的旧轨迹")
+        if (samplesLost) add("部分常去地点的原始采样")
+    }.joinToString("和")
+    return Perm(PermId.LOCKED, "无法读取的旧记录",
+        "系统清空了本机加密密钥，${what}已无法读取。行程、设置和学习结果不受影响；这些记录仍保留在本机，是否删除由你决定。",
+        false, group = PermGroup.INFO, actionLabel = "删除无法读取的记录",
+        confirm = "将删除${what}。这些记录已无法读取，删除后不影响行程、设置和学习结果。",
+        action = {
+            val app = ctx.applicationContext
+            Thread({
+                runCatching { com.busnotice.commute.TraceStore.purgeLost(app) }
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    Toast.makeText(app, "已删除无法读取的记录", Toast.LENGTH_SHORT).show(); changed()
+                }
+            }, "purge-locked").start()
+        })
 }
 
 internal fun summaryOf(perms: List<Perm>) = SetupSummary.counts(perms.map { it.group to it.granted })

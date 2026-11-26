@@ -11,6 +11,7 @@ class CapsuleApp : Application() {
             runCatching { LocalCrypto.warm(this) }
             runCatching { TraceStore.migrateAll(this) }
             runCatching { Places.encryptStoredSamples(this) }
+            runCatching { TraceStore.refreshLocked(this) }
         }, "local-crypto").start()
     }
 }

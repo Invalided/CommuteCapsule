@@ -349,7 +349,8 @@ object TraceLog {
 
     private fun prune(ctx: Context) {
         val cut = LocalDate.now().minusDays(KEEP_DAYS).toString()
-        dir(ctx).listFiles()?.forEach { if (it.name.take(10) < cut) it.delete() }
+        // 含有暂时无法读取、或不可恢复记录的文件不按保留期删除，由用户在设置检查中决定
+        dir(ctx).listFiles()?.forEach { if (it.name.take(10) < cut && TraceStore.prunable(ctx, it)) it.delete() }
     }
 
     private fun records(ctx: Context) = dir(ctx).listFiles { f -> f.isFile && !f.name.endsWith(RecordMigration.TMP_SUFFIX) }

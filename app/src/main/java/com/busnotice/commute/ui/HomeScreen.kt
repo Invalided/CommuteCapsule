@@ -133,6 +133,13 @@ fun HomeScreen(
     val perms = remember(resumeTick, version) { permChecks(ctx, { p -> permLauncher.launch(p) }) { version++ } }
     val batch = remember(resumeTick, version) { batchPermissions(ctx) }
     val days = remember(resumeTick) { com.busnotice.commute.TraceLog.dayCount(ctx) }
+    // 可读密钥有变化（例如旧密钥恢复可读）时，后台重新统计无法读取的记录，设置检查随之更新
+    LaunchedEffect(resumeTick) {
+        if (com.busnotice.commute.TraceStore.lockedStale()) {
+            withContext(Dispatchers.IO) { runCatching { com.busnotice.commute.TraceStore.refreshLocked(ctx) } }
+            version++
+        }
+    }
     val diag = remember(resumeTick, version) { com.busnotice.commute.Diag.last(ctx) }
 
     // 进程重启后内存里的看板是空的：先用本地存的那份顶上；还没有的话显示「正在恢复…」，30 秒后服务还没起来就不再显示
@@ -519,6 +526,11 @@ private fun PermRow(perms: List<Perm>, dark: Boolean, modifier: Modifier = Modif
             Box(Modifier.size(7.dp).clip(CircleShape).background(Fuse.Amber))
             Spacer(Modifier.width(6.dp))
             Text("还差 $missing 项设置", fontSize = 13.sp, color = Fuse.Amber, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(10.dp))
+        } else if (perms.any { it.id == PermId.LOCKED }) {
+            Box(Modifier.size(7.dp).clip(CircleShape).background(Fuse.Amber))
+            Spacer(Modifier.width(6.dp))
+            Text("有旧记录无法读取", fontSize = 13.sp, color = Fuse.Amber)
             Spacer(Modifier.width(10.dp))
         }
         Text("$ok / ${sum.total} ›", fontSize = 14.sp, color = ink, style = TextStyle(fontFeatureSettings = "tnum"))

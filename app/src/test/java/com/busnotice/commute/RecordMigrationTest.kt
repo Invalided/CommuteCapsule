@@ -23,7 +23,7 @@ class RecordMigrationTest {
         val f = file(plain)
         assertEquals(3, RecordMigration.migrateFile(f) { c.encrypt(it) })
         val stored = f.readLines()
-        assertTrue(stored.all { it.startsWith("e1:") })
+        assertTrue(stored.all { it.startsWith("e2:0:") })
         assertEquals(plain, RecordCodec.decodeLines(stored, c).text)
         assertFalse(File(f.parentFile, f.name + ".tmp").exists())
     }
@@ -72,14 +72,32 @@ class RecordMigrationTest {
         assertEquals(3, RecordMigration.migrateFile(f) { c.encrypt(it) })
     }
 
-    @Test fun fileBlobStoreWritesAtomically() {
-        val f = File(tmp.root, "key/local_key.bin")
-        val s = FileBlobStore(f)
-        assertEquals(null, s.read())
-        assertTrue(s.write(byteArrayOf(1, 2, 3)))
-        assertTrue(s.read()!!.contentEquals(byteArrayOf(1, 2, 3)))
-        assertTrue(s.write(byteArrayOf(4)))
-        assertTrue(s.read()!!.contentEquals(byteArrayOf(4)))
-        assertFalse(File(f.parentFile, "local_key.bin.tmp").exists())
+    @Test fun keyFilesWriteAtomicallyAndRetireWithoutDeleting() {
+        val d = File(tmp.root, "key")
+        var t = java.time.LocalDateTime.of(2030, 1, 2, 3, 4, 5)
+        val s = FileKeyFiles(d) { t }
+        assertEquals(null, s.readCurrent())
+        assertTrue(s.writeCurrent(byteArrayOf(1, 2, 3)))
+        assertTrue(s.readCurrent()!!.contentEquals(byteArrayOf(1, 2, 3)))
+        // 已有当前密钥时不允许覆盖
+        assertFalse(s.writeCurrent(byteArrayOf(4)))
+        assertTrue(s.readCurrent()!!.contentEquals(byteArrayOf(1, 2, 3)))
+        assertFalse(File(d, "local_key.bin.tmp").exists())
+        // 停用：改名保留，内容不变
+        assertEquals("local_key.20300102-030405.bin", s.retireCurrent())
+        assertEquals(null, s.readCurrent())
+        assertTrue(s.writeCurrent(byteArrayOf(4)))
+        assertEquals("local_key.20300102-030405-1.bin", s.retireCurrent())
+        assertEquals(listOf("local_key.20300102-030405-1.bin", "local_key.20300102-030405.bin"), s.retired().keys.sorted())
+        assertTrue(s.retired()["local_key.20300102-030405.bin"]!!.contentEquals(byteArrayOf(1, 2, 3)))
+        assertEquals("", s.retireCurrent())
+    }
+
+    @Test fun rewriteDropsOnlySelectedLinesAndDeletesEmptyFile() {
+        val f = file(plain)
+        RecordMigration.rewrite(f) { if (it.contains("loc")) null else it }
+        assertEquals(listOf(plain[0], plain[2]), f.readLines())
+        RecordMigration.rewrite(f) { null }
+        assertFalse(f.exists())
     }
 }
