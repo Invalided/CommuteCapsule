@@ -12,8 +12,8 @@ class MetroCellsTest {
 
     private fun snap(t: Long, tac: Int?, lte: Int? = null) = CellSnap(t, tac, null, null, lte)
 
-    private fun ride(l: MetroTacLearner, tac: Int, n: Int = 40) {
-        repeat(n) { l.sampleRide(snap(it * 5_000L, tac)) }
+    private fun ride(l: MetroTacLearner, tac: Int, n: Int = 40, step: Long = 5_000L) {
+        repeat(n) { l.sampleRide(snap(it * step, tac)) }
         l.endRide()
     }
 
@@ -36,11 +36,96 @@ class MetroCellsTest {
         assertNull(l.endRide())
     }
 
+    private val gpsFast = SurfaceFix("gps", 8f, 10f)
+
+    /** 一趟公交：每 5 秒一次地面采样，共 n 次 */
+    private fun surfaceTrip(l: MetroTacLearner, tac: Int, fix: SurfaceFix = gpsFast, n: Int = 20): List<MetroTacLearner.SurfaceHit> {
+        repeat(n) { l.sampleSurface(snap(it * 5_000L, tac), fix) }
+        return l.endSurface()
+    }
+
     @Test fun seenOnSurfaceIsVetoed() {
         val l = MetroTacLearner()
         ride(l, UNDER); ride(l, UNDER)
-        repeat(2) { l.sampleSurface(snap(0, UNDER)); l.endSurface() }
+        surfaceTrip(l, UNDER); surfaceTrip(l, UNDER)
         assertFalse(l.isMetroTac(UNDER))
+    }
+
+    @Test fun networkSpeedNotCountedAsSurface() {
+        val l = MetroTacLearner()
+        ride(l, UNDER); ride(l, UNDER)
+        repeat(3) { assertTrue(surfaceTrip(l, UNDER, SurfaceFix("network", 30f, 25f)).isEmpty()) }
+        assertEquals(0, l.surfaceTrips[UNDER] ?: 0)
+        assertTrue(l.isMetroTac(UNDER))
+    }
+
+    @Test fun slowOrCoarseOrNearStationGpsNotCounted() {
+        val l = MetroTacLearner()
+        assertTrue(surfaceTrip(l, UP, SurfaceFix("gps", 3f, 10f)).isEmpty())
+        assertTrue(surfaceTrip(l, UP, SurfaceFix("gps", null, 10f)).isEmpty())
+        assertTrue(surfaceTrip(l, UP, SurfaceFix("gps", 8f, 80f)).isEmpty())
+        assertTrue(surfaceTrip(l, UP, SurfaceFix("gps", 8f, 10f, stationM = 120.0)).isEmpty())
+        assertEquals(1, surfaceTrip(l, UP, SurfaceFix("gps", 8f, 10f, stationM = 900.0)).size)
+    }
+
+    @Test fun briefSurfaceSightingNotCounted() {
+        val l = MetroTacLearner()
+        assertTrue(surfaceTrip(l, UP, n = 2).isEmpty())                  // 次数不足
+        repeat(5) { l.sampleSurface(snap(it * 10_000L, UP), gpsFast) }    // 5 次但只跨 40 秒
+        assertTrue(l.endSurface().isEmpty())
+        val hit = surfaceTrip(l, UP, n = 13).single()                     // 13 次、跨 60 秒
+        assertEquals(UP, hit.tac); assertEquals(13, hit.samples); assertEquals(60L, hit.spanSec); assertEquals("gps", hit.provider)
+    }
+
+    @Test fun surfaceCountedOncePerTrip() {
+        val l = MetroTacLearner()
+        repeat(4) { i -> repeat(5) { l.sampleSurface(snap(i * 100_000L + it * 5_000L, UP), gpsFast) } }
+        assertEquals(1, l.endSurface().size)
+        assertEquals(1, l.surfaceTrips[UP])
+    }
+
+    @Test fun establishedTacSurvivesOccasionalSurface() {
+        val l = MetroTacLearner()
+        repeat(6) { ride(l, UNDER) }
+        repeat(3) { surfaceTrip(l, UNDER) }
+        assertTrue(l.isMetroTac(UNDER))                                   // 地面 3 趟 ≤ 地下 6 趟
+        repeat(4) { surfaceTrip(l, UNDER) }
+        assertFalse(l.isMetroTac(UNDER))                                  // 地面 7 趟 > 地下 6 趟
+    }
+
+    @Test fun sparseRideWithEnoughSpanCounts() {
+        val l = MetroTacLearner()
+        ride(l, UNDER, n = 9, step = 60_000L)                             // 9 次采样、跨 8 分钟
+        ride(l, UNDER, n = 25, step = 30_000L)
+        assertTrue(l.isMetroTac(UNDER))
+        assertEquals(25, l.lastRideSamples); assertEquals(720L, l.lastRideSpanSec)
+    }
+
+    @Test fun sparseRideTooShortNotCounted() {
+        val l = MetroTacLearner()
+        ride(l, UNDER, n = 7, step = 60_000L)                             // 采样不足 8 次
+        ride(l, UNDER, n = 20, step = 7_000L)                             // 跨度 133 秒，不足 150 秒
+        assertEquals(0, l.rideTrips[UNDER] ?: 0)
+    }
+
+    @Test fun legacyJsonUpgradeRestoresLearned() {
+        val legacy = org.json.JSONObject()
+            .put("ride", org.json.JSONObject().put(UNDER.toString(), 14).put(UP.toString(), 1))
+            .put("surface", org.json.JSONObject().put(UNDER.toString(), 3).put(UP.toString(), 9))
+        val l = MetroTacLearner.fromJson(legacy)
+        assertTrue(l.migrated)
+        assertTrue(l.isMetroTac(UNDER))
+        assertEquals(14, l.rideTrips[UNDER]); assertTrue(l.surfaceTrips.isEmpty())
+        val again = MetroTacLearner.fromJson(l.toJson())
+        assertFalse(again.migrated)
+        assertTrue(again.isMetroTac(UNDER))
+    }
+
+    @Test fun currentJsonKeepsSurfaceCounts() {
+        val l = MetroTacLearner(); ride(l, UNDER); ride(l, UNDER); surfaceTrip(l, UP)
+        val back = MetroTacLearner.fromJson(l.toJson())
+        assertFalse(back.migrated)
+        assertEquals(1, back.surfaceTrips[UP])
     }
 
     @Test fun jsonRoundTrip() {

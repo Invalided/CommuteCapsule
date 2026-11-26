@@ -12,12 +12,30 @@ data class CellSnap(val t: Long, val nrTac: Int?, val nrId: Long?, val lteTac: I
 }
 
 /**
- * 地铁「地下专网区号」学习（纯逻辑，不碰 Android，方便单测）。
+ * 地面区号采样所附的定位信息。
+ * @param provider 定位来源（LocationManager 的 provider 名）
+ * @param speed 定位给出的速度（m/s），无速度为 null
+ * @param accuracy 定位精度（米）
+ * @param stationM 到本趟行程任一地铁段起终站的最近距离（米），站点无坐标时为 null
+ */
+data class SurfaceFix(val provider: String?, val speed: Float?, val accuracy: Float, val stationM: Double? = null)
+
+/**
+ * 地铁「地下专网区号」学习（纯逻辑，不依赖 Android，便于单测）。
  *
- * 实测：坐地铁时手机几乎全程连着同一个 5G 区号（TAC），进站那一下切进去、出站一分钟内切出来，地面上基本见不到。
- * 学法：每趟地铁结束，全程 ≥ 30 次采样（约 2.5 分钟）里有 80% 以上是同一个区号，就给它记一趟；
- * 坐公交在路上跑的时候见过的区号也记一趟（说明地面也有，不能拿来判断进站）。
- * 「地铁里 ≥ 2 趟、地面 < 2 趟」才算学会。
+ * 乘地铁时手机基本全程驻留在同一个 5G 区号（TAC），进站时切入、出站后约一分钟内切出，地面上基本见不到。
+ *
+ * 地下计数：一趟地铁结束时，采样数 ≥ [MIN_SAMPLES]、采样覆盖时长 ≥ [MIN_SPAN_MS]，且同一区号占比 ≥ [SHARE]，
+ * 该区号记一趟。按时长而非单纯按采样数判断，是因为后台被系统冻结时一趟只能采到十几个样本。
+ *
+ * 地面计数：乘公交途中，仅采用 GPS 定位（速度 ≥ [SURFACE_SPEED]、精度 ≤ [SURFACE_ACC_M]、
+ * 距地铁站超过 [STATION_M]）时所见的区号；网络定位的速度在地铁站内常出现数十 m/s 的虚假值，不予采用。
+ * 同一趟行程中某区号出现 ≥ [SURFACE_SAMPLES] 次且首末间隔 ≥ [SURFACE_SPAN_MS]，行程结束时记一趟。
+ *
+ * 判定：地下 ≥ [NEED_TRIPS] 趟且地面 < [NEED_TRIPS] 趟即视为地下区号；地下已达 [STABLE_TRIPS] 趟的区号，
+ * 仅当地面趟数超过地下趟数且不少于 [REVOKE_MIN] 趟时才撤销，避免偶发误记导致永久失效。
+ *
+ * 存储格式带版本号 [VERSION]；读取旧版本数据时丢弃其地面计数（旧规则会把网络定位的虚假速度计为地面），地下计数保留。
  */
 class MetroTacLearner(
     val rideTrips: MutableMap<Int, Int> = HashMap(),
@@ -25,43 +43,93 @@ class MetroTacLearner(
 ) {
     private val rideCount = HashMap<Int, Int>()
     private var rideTotal = 0
-    private val surfaceSeen = HashSet<Int>()
+    private var rideFirst = 0L
+    private var rideLast = 0L
+    /** 本趟行程地面采样：区号 → [次数, 首次时刻, 末次时刻] */
+    private val surfaceSeen = HashMap<Int, LongArray>()
+
+    /** 读取时是否由旧版本数据升级（地面计数已清空）；调用方保存后应复位 */
+    var migrated = false
+
+    /** 最近一次 [endRide] 的采样数与覆盖秒数（诊断用） */
+    var lastRideSamples = 0; private set
+    var lastRideSpanSec = 0L; private set
+
+    /** 一次地面计数：区号、本趟采样数、首末间隔秒数、定位来源 */
+    data class SurfaceHit(val tac: Int, val samples: Int, val spanSec: Long, val provider: String)
 
     fun sampleRide(s: CellSnap) {
         val t = s.nrTac ?: return
+        if (rideTotal == 0) rideFirst = s.t
+        rideLast = s.t
         rideTotal++; rideCount[t] = (rideCount[t] ?: 0) + 1
     }
 
-    fun sampleSurface(s: CellSnap) { s.nrTac?.let { surfaceSeen += it } }
+    /** 记录一次地面采样；定位不符合条件时不记录并返回 false */
+    fun sampleSurface(s: CellSnap, fix: SurfaceFix): Boolean {
+        val tac = s.nrTac ?: return false
+        if (fix.provider != GPS) return false
+        if (fix.speed == null || fix.speed < SURFACE_SPEED || fix.accuracy > SURFACE_ACC_M) return false
+        if (fix.stationM != null && fix.stationM <= STATION_M) return false
+        val a = surfaceSeen[tac]
+        if (a == null) surfaceSeen[tac] = longArrayOf(1, s.t, s.t) else { a[0]++; a[2] = s.t }
+        return true
+    }
 
-    /** 一趟地铁坐完；返回这趟算数的区号（不够格返回 null） */
+    fun hasPendingSurface(): Boolean = surfaceSeen.isNotEmpty()
+
+    /** 一趟地铁坐完；返回这趟计数的区号（不满足条件返回 null） */
     fun endRide(): Int? {
         val top = rideCount.maxByOrNull { it.value }
-        val ok = top != null && rideTotal >= MIN_SAMPLES && top.value >= rideTotal * SHARE
+        val span = if (rideTotal > 0) rideLast - rideFirst else 0L
+        val ok = top != null && rideTotal >= MIN_SAMPLES && span >= MIN_SPAN_MS && top.value >= rideTotal * SHARE
         val tac = if (ok) top!!.key else null
         if (tac != null) rideTrips[tac] = (rideTrips[tac] ?: 0) + 1
-        rideCount.clear(); rideTotal = 0
+        lastRideSamples = rideTotal; lastRideSpanSec = span / 1000
+        rideCount.clear(); rideTotal = 0; rideFirst = 0L; rideLast = 0L
         return tac
     }
 
-    fun endSurface() {
-        surfaceSeen.forEach { surfaceTrips[it] = (surfaceTrips[it] ?: 0) + 1 }
+    /** 一趟行程结束：结算地面采样，返回本趟计入地面的区号 */
+    fun endSurface(): List<SurfaceHit> {
+        val hits = surfaceSeen.entries
+            .filter { (_, a) -> a[0] >= SURFACE_SAMPLES && a[2] - a[1] >= SURFACE_SPAN_MS }
+            .map { (tac, a) -> SurfaceHit(tac, a[0].toInt(), (a[2] - a[1]) / 1000, GPS) }
+        hits.forEach { surfaceTrips[it.tac] = (surfaceTrips[it.tac] ?: 0) + 1 }
         surfaceSeen.clear()
+        return hits
     }
 
-    fun isMetroTac(tac: Int?): Boolean =
-        tac != null && (rideTrips[tac] ?: 0) >= NEED_TRIPS && (surfaceTrips[tac] ?: 0) < NEED_TRIPS
+    fun isMetroTac(tac: Int?): Boolean {
+        if (tac == null) return false
+        val ride = rideTrips[tac] ?: 0
+        val surface = surfaceTrips[tac] ?: 0
+        if (ride < NEED_TRIPS) return false
+        if (surface < NEED_TRIPS) return true
+        return ride >= STABLE_TRIPS && !(surface > ride && surface >= REVOKE_MIN)
+    }
 
     fun hasLearned(): Boolean = rideTrips.keys.any { isMetroTac(it) }
 
     fun toJson(): JSONObject = JSONObject()
+        .put("v", VERSION)
         .put("ride", JSONObject(rideTrips.mapKeys { it.key.toString() }))
         .put("surface", JSONObject(surfaceTrips.mapKeys { it.key.toString() }))
 
     companion object {
-        const val MIN_SAMPLES = 30
+        const val VERSION = 2
+        const val GPS = "gps"
+        const val MIN_SAMPLES = 8
+        const val MIN_SPAN_MS = 150_000L
         const val SHARE = 0.8
         const val NEED_TRIPS = 2
+        const val STABLE_TRIPS = 4
+        const val REVOKE_MIN = 3
+        const val SURFACE_SPEED = 4f
+        const val SURFACE_ACC_M = 50f
+        const val SURFACE_SAMPLES = 3
+        const val SURFACE_SPAN_MS = 60_000L
+        const val STATION_M = 300.0
 
         fun fromJson(o: JSONObject?): MetroTacLearner {
             fun read(x: JSONObject?): MutableMap<Int, Int> {
@@ -69,7 +137,10 @@ class MetroTacLearner(
                 x?.keys()?.forEach { k -> k.toIntOrNull()?.let { m[it] = x.optInt(k) } }
                 return m
             }
-            return MetroTacLearner(read(o?.optJSONObject("ride")), read(o?.optJSONObject("surface")))
+            val old = o != null && o.optInt("v", 1) < VERSION
+            val l = MetroTacLearner(read(o?.optJSONObject("ride")), if (old) HashMap() else read(o?.optJSONObject("surface")))
+            l.migrated = old
+            return l
         }
     }
 }

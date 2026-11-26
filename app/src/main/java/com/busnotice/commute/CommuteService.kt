@@ -318,7 +318,7 @@ class CommuteService : Service() {
         TraceLog.event("dev", "what" to (if (Health.screenOn(this)) "screen_on" else "screen_off"), "plugged" to Health.plugged(this))
         TraceLog.onCell = { snap -> scope.launch(Dispatchers.Main) { runCatching { onCell(snap) }.onFailure { Log.w(TAG, "基站处理失败", it) } } }
         walkFixes.clear(); firstWalkDone = false; userRestarted = restart
-        metroGate.reset(); enterVetoAt = 0L; cellExitAt = 0L; lastUgAt = 0L; surfaceSince = 0L; goodGpsAt = 0L; LiveNotifier.resetGate(); pendingArriveAlert = null; if (metroRideOn) fpRec.finish(); metroRideOn = false; busMovingOn = false; tacLearner = null
+        metroGate.reset(); enterVetoAt = 0L; cellExitAt = 0L; lastUgAt = 0L; surfaceSince = 0L; goodGpsAt = 0L; LiveNotifier.resetGate(); pendingArriveAlert = null; if (metroRideOn) fpRec.finish(); metroRideOn = false; tacLearner = null
         stationAt = 0L; metroRideSec.clear(); metroRoutes.clear(); alightAt = 0L; fenceFixes.clear(); stillSince = 0L; lastFastAt = 0L; rideLearned = false; stopAlerted = ""
         stationByTap = false; arriveAnchorAt = 0L; metroAnchorIdx = -1; metroAnchorAt = 0L
         deferredTapAt = 0L; deferredTapKind = null
@@ -2519,7 +2519,6 @@ class CommuteService : Service() {
     private var metroRideOn = false
     private var metroRideKey = ""
     private var metroRideStart = 0L
-    private var busMovingOn = false
     private var cellExitAt = 0L          // 基站判断出站的时刻（离开地下区号的第一次采样）
     private var lastUgAt = 0L            // 最后一次连着地下区号的采样时刻
     private var surfaceSince = 0L        // 离开地下区号后第一次地面采样（0 = 现在还在地下 / 没数据）
@@ -2542,17 +2541,55 @@ class CommuteService : Service() {
         return legIdx > 0 && trip.legs[legIdx - 1].isMetroOnly() && boardedAt > 0 && alightAt == 0L && !metroExitSeen
     }
 
-    /** 坐着公交、车在路上跑（GPS 速度 ≥ 4 m/s）：这时见到的区号肯定是地面的 */
+    /** 当前处于公交段：最后一段公交已上车，或上一段是公交、已上车且尚未判定下车 */
+    private fun onBusLeg(): Boolean =
+        if (riding) !trip.legs[legIdx].isMetroOnly()
+        else legIdx > 0 && !trip.legs[legIdx - 1].isMetroOnly() && boardedAt > 0 && alightAt == 0L
+
+    /** 坐着公交且最近定位速度 ≥ 4 m/s（用于进站否决） */
     private fun busMoving(now: Long): Boolean {
-        val onBus = if (riding) !trip.legs[legIdx].isMetroOnly()
-            else legIdx > 0 && !trip.legs[legIdx - 1].isMetroOnly() && boardedAt > 0 && alightAt == 0L
         val fast = best?.let { now - it.time < 30_000 && it.hasSpeed() && it.speed >= 4f } == true
-        return onBus && fast
+        return onBusLeg() && fast
+    }
+
+    /**
+     * 地面区号学习所用的定位：处于公交段时取 30 秒内的定位，优先 GPS。
+     * 是否采用（来源须为 GPS、速度、精度、与地铁站距离）由 [MetroTacLearner.sampleSurface] 判断。
+     */
+    private fun surfaceFix(now: Long): SurfaceFix? {
+        if (!onBusLeg()) return null
+        val f = lastGpsFix?.takeIf { now - it.time < 30_000 } ?: best?.takeIf { now - it.time < 30_000 } ?: return null
+        return SurfaceFix(f.provider, if (f.hasSpeed()) f.speed else null, f.accuracy, metroStationDist(f))
+    }
+
+    /** 到本趟行程任一地铁段上车站或下车站的最近距离（米）；均无坐标时为 null */
+    private fun metroStationDist(loc: Location): Double? =
+        trip.legs.filter { it.isMetroOnly() }.flatMap { it.candidates }.flatMap { c ->
+            listOfNotNull(
+                (c.lat to c.lng).takeIf { !c.lat.isNaN() && !c.lng.isNaN() },
+                (c.alightLat to c.alightLng).takeIf { !c.alightLat.isNaN() && !c.alightLng.isNaN() },
+            )
+        }.minOfOrNull { (la, ln) -> Geo.distanceM(loc.latitude, loc.longitude, la, ln) }
+
+    /** 结算本趟地面区号采样：每计入一笔写一条行程日志 */
+    private fun flushSurface(l: MetroTacLearner) {
+        if (!l.hasPendingSurface()) return
+        val hits = l.endSurface()
+        MetroCells.save(this, l)
+        hits.forEach { h ->
+            TraceLog.event("metro_surface", "tac" to h.tac, "n" to h.samples, "span" to h.spanSec, "p" to h.provider,
+                "ride" to (l.rideTrips[h.tac] ?: 0), "surface" to (l.surfaceTrips[h.tac] ?: 0), "metro" to l.isMetroTac(h.tac))
+        }
     }
 
     private fun onCell(s: CellSnap) {
         if (!::trip.isInitialized || tail || finishing) return
         val l = tacLearner ?: MetroCells.load(this).also { tacLearner = it }
+        if (l.migrated) {
+            l.migrated = false
+            MetroCells.save(this, l)
+            TraceLog.event("metro_cells_migrate", "v" to MetroTacLearner.VERSION, "learned" to l.hasLearned())
+        }
         val underground = l.isMetroTac(s.nrTac)
         // 只看有 5G 区号的采样：地下掉到只有 4G 时没有区号，不能当成到了地面
         if (s.nrTac != null) { if (underground) { lastUgAt = s.t; surfaceSince = 0L } else if (surfaceSince == 0L) surfaceSince = s.t }
@@ -2577,8 +2614,7 @@ class CommuteService : Service() {
                 TraceLog.event("fp_eta", "enb" to e, "remS" to rem / 1000, "eta" to fpEtaAt)
             }
         } else if (metroRideOn) endMetroRide()
-        if (busMoving(s.t)) { busMovingOn = true; l.sampleSurface(s) }
-        else if (busMovingOn) { busMovingOn = false; l.endSurface(); MetroCells.save(this, l) }
+        surfaceFix(s.t)?.let { l.sampleSurface(s, it) }
 
         val edge = metroGate.feed(s)
         // 进站被否决后仍持续停留在地下区号、且期间没有精确 GPS（人在地面）：补判进站
@@ -2663,7 +2699,8 @@ class CommuteService : Service() {
                 .put("start", metroRideStart).put("end", System.currentTimeMillis())
                 .put("board", boardedAt).put("tacOk", tac != null).put("mt", true).put("join", joinLeg >= 0).put("seq", seq))
         }
-        TraceLog.event("metro_cells", "tacOk" to (tac != null), "learned" to l.hasLearned(), "rides" to MetroCells.rideCount(this))
+        TraceLog.event("metro_cells", "tacOk" to (tac != null), "learned" to l.hasLearned(), "rides" to MetroCells.rideCount(this),
+            "n" to l.lastRideSamples, "span" to l.lastRideSpanSec)
     }
 
     /** 换乘段：出站时刻就是下地铁时刻，顺便学这段地铁实际坐了多久 */
@@ -2697,7 +2734,7 @@ class CommuteService : Service() {
         holdCpu(false)
         WakeAlarm.cancel(this)
         if (metroRideOn) runCatching { endMetroRide() }
-        if (busMovingOn) runCatching { busMovingOn = false; tacLearner?.let { it.endSurface(); MetroCells.save(this, it) } }
+        runCatching { tacLearner?.let { flushSurface(it) } }
         TraceLog.onCell = null
         if (!finishing && !tail) placeVotes()
         if (tail && !finishing) TraceLog.event("tail_end", "after" to (System.currentTimeMillis() - tailStart) / 1000)
