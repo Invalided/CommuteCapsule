@@ -53,7 +53,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
-import com.busnotice.commute.MigrationContent
 import com.busnotice.commute.MigrationException
 import com.busnotice.commute.MigrationStore
 import com.busnotice.commute.Migrator
@@ -218,8 +217,8 @@ private fun scanImage(ctx: Context, uri: Uri): String? {
 
 private sealed interface ImportStep {
     object Pick : ImportStep
-    class Code(val bytes: ByteArray) : ImportStep
-    class Preview(val content: MigrationContent) : ImportStep
+    class Code(val file: File) : ImportStep
+    class Preview(val opened: MigrationStore.Opened) : ImportStep
     object Applying : ImportStep
 }
 
@@ -308,7 +307,7 @@ fun ImportMigrationFlow(onClose: () -> Unit) {
                 DialogButton("下一步", primary = true, enabled = !busy && RecoveryCode.normalize(code) != null, onClick = {
                     busy = true; error = null
                     scope.launch {
-                        val r = withContext(Dispatchers.IO) { runCatching { MigrationStore.open(s.bytes, code) } }
+                        val r = withContext(Dispatchers.IO) { runCatching { MigrationStore.open(s.file, code) } }
                         busy = false
                         r.onSuccess { step = ImportStep.Preview(it) }
                             .onFailure { error = (it as? MigrationException)?.userMessage ?: "恢复码不对或文件已损坏" }
@@ -318,14 +317,14 @@ fun ImportMigrationFlow(onClose: () -> Unit) {
             dismissButton = { DialogButton("取消", enabled = !busy, onClick = onClose) },
         )
         is ImportStep.Preview -> {
-            val m = Migrator.preview(s.content)
+            val m = s.opened.preview
             AlertDialog(
                 onDismissRequest = onClose,
                 shape = DialogShape, containerColor = surface, titleContentColor = ink, textContentColor = ink,
                 title = { Text("导入迁移文件？") },
                 text = {
                     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("导出时间：${stamp(s.content.meta.createdAt)}", fontSize = 14.sp)
+                        Text("导出时间：${stamp(m.createdAt)}", fontSize = 14.sp)
                         Text("行程：${m.trips} 条", fontSize = 14.sp)
                         Text("设置、学习结果、家和公司：包含", fontSize = 14.sp)
                         Text("行程轨迹和原始定位：" + if (m.includesRecords) "包含（${m.traceDays} 天）" else "不包含", fontSize = 14.sp)
@@ -337,10 +336,10 @@ fun ImportMigrationFlow(onClose: () -> Unit) {
                 },
                 confirmButton = {
                     DialogButton("替换并导入", primary = true, onClick = {
-                        val content = s.content
+                        val opened = s.opened
                         step = ImportStep.Applying
                         scope.launch {
-                            val r = withContext(Dispatchers.IO) { runCatching { MigrationStore.apply(ctx, content) }.getOrDefault(Migrator.Outcome.FAILED) }
+                            val r = withContext(Dispatchers.IO) { runCatching { MigrationStore.apply(ctx, opened) }.getOrDefault(Migrator.Outcome.FAILED) }
                             if (r == Migrator.Outcome.OK) {
                                 Toast.makeText(ctx, "导入完成，正在重新打开", Toast.LENGTH_SHORT).show()
                                 MigrationStore.restart(ctx)
