@@ -145,6 +145,6 @@ class MigrationFileTest {
         val px = IntArray(w * w) { i -> if (m[(i / w) / scale][(i % w) / scale]) 0xFF000000.toInt() else 0xFFFFFFFF.toInt() }
         assertEquals(c, RecoveryQr.decode(px, w, w)?.let(RecoveryCode::fromQr))
         assertNull(RecoveryQr.decode(IntArray(100 * 100) { 0xFFFFFFFF.toInt() }, 100, 100))
-        if (m.size > 41) fail("恢复码二维码应保持低版本，便于识别")
+        if (m.size - 2 * RecoveryQr.MARGIN > 33) fail("恢复码二维码应保持低版本，便于识别")
     }
 }
