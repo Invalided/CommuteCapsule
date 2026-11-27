@@ -795,7 +795,21 @@ interface UndoStore {
  * 全程逐个记录文件处理，内存占用与记录总量无关。
  */
 object Migrator {
-    enum class Outcome { OK, KEY_UNAVAILABLE, UNDO_SAVE_FAILED, FAILED }
+    /**
+     * 导入结果。[REJECTED]、[KEY_UNAVAILABLE]、[STAGING_FAILED]、[UNDO_SAVE_FAILED] 均发生在改动本机数据之前，本机数据未改动；
+     * [ROLLED_BACK] 表示替换过程中失败，已用快照恢复导入前的数据。
+     */
+    enum class Outcome {
+        OK,
+        /** 迁移包不完整、被改动、恢复码不对、含密文记录或为本机快照 */
+        REJECTED,
+        KEY_UNAVAILABLE,
+        /** 写入暂存区失败 */
+        STAGING_FAILED,
+        UNDO_SAVE_FAILED,
+        /** 替换失败，已回滚 */
+        ROLLED_BACK,
+    }
 
     private class Stop(val outcome: Outcome) : MigrationPackage.Abort()
 
@@ -828,19 +842,19 @@ object Migrator {
                 MigrationPackage.scan(input) { name, lines ->
                     val enc = ArrayList<String>(lines.size)
                     for (l in lines) {
-                        if (RecordFormat.isEncrypted(l)) throw Stop(Outcome.FAILED)
+                        if (RecordFormat.isEncrypted(l)) throw Stop(Outcome.REJECTED)
                         enc += local.encrypt(l) ?: throw Stop(Outcome.KEY_UNAVAILABLE)
                     }
-                    if (!local.stageTrace(name, enc)) throw Stop(Outcome.FAILED)
+                    if (!local.stageTrace(name, enc)) throw Stop(Outcome.STAGING_FAILED)
                     staged += name
                 }
             }
         } catch (e: Stop) {
             local.clearStaged(); return e.outcome
         } catch (e: Exception) {
-            local.clearStaged(); return Outcome.FAILED
+            local.clearStaged(); return Outcome.REJECTED
         }
-        if (scan.meta.raw) { local.clearStaged(); return Outcome.FAILED }
+        if (scan.meta.raw) { local.clearStaged(); return Outcome.REJECTED }
         val withRecords = scan.traceNames != null || scan.samplePrefs != null
         val encSamples: Map<String, Any>? = if (!withRecords) null else {
             val s = scan.samplePrefs?.get("samples") as? String
@@ -851,7 +865,7 @@ object Migrator {
         local.clearStaged()
         if (ok) return Outcome.OK
         restore(PackageSource { undo.open() }, local)
-        return Outcome.FAILED
+        return Outcome.ROLLED_BACK
     }
 
     /** 用撤销快照恢复导入前的数据；快照读取不完整时不做任何改动 */

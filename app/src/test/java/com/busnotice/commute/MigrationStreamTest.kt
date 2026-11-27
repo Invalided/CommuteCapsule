@@ -215,7 +215,7 @@ class MigrationStreamTest {
             val t = file.copyOf(cut)
             assertEquals("cut at $cut", MigrationException.Reason.WRONG_CODE_OR_CORRUPT, reason { MigrationCrypto.open(t, code) })
             val l = local(); val before = l.traces.toMap(); val prefs = l.prefs.toMap()
-            assertEquals(Migrator.Outcome.FAILED, Migrator.importReplace(source(t), l, 1L, MemUndo()))
+            assertEquals(Migrator.Outcome.REJECTED, Migrator.importReplace(source(t), l, 1L, MemUndo()))
             assertEquals(before, l.traces.toMap()); assertEquals(prefs, l.prefs.toMap()); assertTrue(l.staged.isEmpty())
         }
     }
@@ -226,7 +226,7 @@ class MigrationStreamTest {
         fun check(label: String, bad: ByteArray) {
             assertEquals(label, MigrationException.Reason.WRONG_CODE_OR_CORRUPT, reason { MigrationCrypto.open(bad, code) })
             val l = local(); val before = l.traces.toMap()
-            assertEquals(label, Migrator.Outcome.FAILED, Migrator.importReplace(source(bad), l, 1L, MemUndo()))
+            assertEquals(label, Migrator.Outcome.REJECTED, Migrator.importReplace(source(bad), l, 1L, MemUndo()))
             assertEquals(before, l.traces.toMap())
         }
         fun flip(at: Int, bit: Int = 1) = file.copyOf().also { it[at] = (it[at].toInt() xor bit).toByte() }
@@ -261,7 +261,7 @@ class MigrationStreamTest {
         })
         assertEquals(MigrationException.Reason.WRONG_CODE_OR_CORRUPT, reason { MigrationCrypto.openStream(ByteArrayInputStream(file), "not a code") })
         val l = local(); val before = l.prefs.toMap()
-        assertEquals(Migrator.Outcome.FAILED, Migrator.importReplace(source(file, other), l, 1L, MemUndo()))
+        assertEquals(Migrator.Outcome.REJECTED, Migrator.importReplace(source(file, other), l, 1L, MemUndo()))
         assertEquals(before, l.prefs.toMap())
         // 不是迁移文件、文件过短
         assertEquals(MigrationException.Reason.NOT_MIGRATION_FILE, reason { MigrationCrypto.open(ByteArray(0), code) })
@@ -274,11 +274,11 @@ class MigrationStreamTest {
         val enc = mapOf("2031-01-10_demo0006.jsonl" to listOf(localKey.encrypt("""{"k":"x"}""")))
         val (file, _) = export(enc)
         val l = local(); val before = l.traces.toMap()
-        assertEquals(Migrator.Outcome.FAILED, Migrator.importReplace(source(file), l, 1L, MemUndo()))
+        assertEquals(Migrator.Outcome.REJECTED, Migrator.importReplace(source(file), l, 1L, MemUndo()))
         assertEquals(before, l.traces.toMap()); assertTrue(l.staged.isEmpty())
         // 本机快照（落盘原样）不能当作迁移包导入
         val snap = ByteArrayOutputStream().also { Migrator.writeSnapshot(l0, true, 5L, it) }.toByteArray()
-        assertEquals(Migrator.Outcome.FAILED, Migrator.importReplace(PackageSource { ByteArrayInputStream(snap) }, l, 1L, MemUndo()))
+        assertEquals(Migrator.Outcome.REJECTED, Migrator.importReplace(PackageSource { ByteArrayInputStream(snap) }, l, 1L, MemUndo()))
         assertEquals(before, l.traces.toMap())
     }
 

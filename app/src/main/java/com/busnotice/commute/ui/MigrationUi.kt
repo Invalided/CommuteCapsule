@@ -339,15 +339,18 @@ fun ImportMigrationFlow(onClose: () -> Unit) {
                         val opened = s.opened
                         step = ImportStep.Applying
                         scope.launch {
-                            val r = withContext(Dispatchers.IO) { runCatching { MigrationStore.apply(ctx, opened) }.getOrDefault(Migrator.Outcome.FAILED) }
+                            val r = withContext(Dispatchers.IO) { runCatching { MigrationStore.apply(ctx, opened) }.getOrNull() }
                             if (r == Migrator.Outcome.OK) {
                                 Toast.makeText(ctx, "导入完成，正在重新打开", Toast.LENGTH_SHORT).show()
                                 MigrationStore.restart(ctx)
                             } else {
                                 Toast.makeText(ctx, when (r) {
+                                    Migrator.Outcome.REJECTED -> "导入失败：文件已损坏或恢复码不对，本机数据未改动"
                                     Migrator.Outcome.KEY_UNAVAILABLE -> "本机加密暂不可用，未做任何改动，请稍后再试"
+                                    Migrator.Outcome.STAGING_FAILED -> "无法写入暂存数据（存储空间不足？），未做任何改动"
                                     Migrator.Outcome.UNDO_SAVE_FAILED -> "无法保存本机快照（存储空间不足？），未做任何改动"
-                                    else -> "导入失败，已恢复导入前的数据"
+                                    Migrator.Outcome.ROLLED_BACK -> "导入失败，已恢复导入前的数据"
+                                    else -> "导入失败"
                                 }, Toast.LENGTH_LONG).show()
                                 onClose()
                             }

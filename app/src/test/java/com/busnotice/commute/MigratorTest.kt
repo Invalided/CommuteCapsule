@@ -27,7 +27,8 @@ class MigratorTest {
         override fun deleteTrace(name: String): Boolean { traces.remove(name); return true }
         override fun encrypt(plain: String) = cipher?.encrypt(plain)
         val staged = sortedMapOf<String, List<String>>()
-        override fun stageTrace(name: String, lines: List<String>): Boolean { staged[name] = lines; return true }
+        var failStage = false
+        override fun stageTrace(name: String, lines: List<String>): Boolean { if (failStage) return false; staged[name] = lines; return true }
         override fun commitStaged(name: String): Boolean { traces[name] = staged.remove(name) ?: return false; return true }
         override fun clearStaged() = staged.clear()
     }
@@ -124,7 +125,7 @@ class MigratorTest {
     @Test fun failedWriteRollsBack() {
         val l = local(); val before = l.prefs.toMap(); val traces = l.traces.toMap()
         l.failPrefs = "walk_learn"
-        assertEquals(Migrator.Outcome.FAILED, importReplace(pkg(true), l, 1L))
+        assertEquals(Migrator.Outcome.ROLLED_BACK, importReplace(pkg(true), l, 1L))
         l.failPrefs = null
         assertEquals(before["trips"], l.prefs["trips"])
         assertEquals(traces, l.traces.toMap())
@@ -133,7 +134,7 @@ class MigratorTest {
     @Test fun encryptedLinesInAPackageAreRejected() {
         val bad = pkg(true).copy(traces = mapOf("2030-01-01_x.jsonl" to listOf("e2:beef0001:AAAA")))
         val l = local(); val before = l.traces.toMap()
-        assertEquals(Migrator.Outcome.FAILED, importReplace(bad, l, 1L))
+        assertEquals(Migrator.Outcome.REJECTED, importReplace(bad, l, 1L))
         assertEquals(before, l.traces.toMap())
     }
     @Test fun compactedRecordsSurviveSnapshotAndRestoreVerbatim() {
@@ -150,6 +151,34 @@ class MigratorTest {
         assertEquals(lines + """{"k":"ev","e":"stop","t":3}""", RecordCodec.decodeLines(stored, localKey).text)
         // 迁移包中的记录为明文：压缩块不可作为迁移包内容导入
         val bad = pkg(true).copy(traces = mapOf("2030-01-01_imported.jsonl" to listOf(block)))
-        assertEquals(Migrator.Outcome.FAILED, importReplace(bad, l, 100L))
+        assertEquals(Migrator.Outcome.REJECTED, importReplace(bad, l, 100L))
+    }
+
+    @Test fun outcomeDistinguishesUnchangedDataFromRollback() {
+        // 校验阶段失败：迁移包截断，未保存快照，本机数据未改动
+        val l = local(); val before = l.prefs.toMap(); val traces = l.traces.toMap()
+        val full = MigrationPackage.write(pkg(true))
+        val truncated = PackageSource { ByteArrayInputStream(full.copyOf(full.size / 2)) }
+        val u = MemUndo()
+        assertEquals(Migrator.Outcome.REJECTED, Migrator.importReplace(truncated, l, 1L, u))
+        assertFalse(u.saved)
+        assertEquals(before, l.prefs.toMap())
+        assertEquals(traces, l.traces.toMap())
+        // 暂存写入失败：同样未改动本机数据，且与迁移包损坏区分
+        l.failStage = true
+        val u2 = MemUndo()
+        assertEquals(Migrator.Outcome.STAGING_FAILED, importReplace(pkg(true), l, 1L, u2))
+        assertFalse(u2.saved)
+        assertEquals(before, l.prefs.toMap())
+        assertEquals(traces, l.traces.toMap())
+        l.failStage = false
+        // 替换阶段失败：已保存快照并回滚
+        l.failPrefs = "learn"
+        val u3 = MemUndo()
+        assertEquals(Migrator.Outcome.ROLLED_BACK, importReplace(pkg(true), l, 1L, u3))
+        assertTrue(u3.saved)
+        l.failPrefs = null
+        assertEquals(before["trips"], l.prefs["trips"])
+        assertEquals(traces, l.traces.toMap())
     }
 }
