@@ -11,10 +11,10 @@ android {
     defaultConfig {
         // 包名可通过环境变量 APP_ID 覆盖
         applicationId = System.getenv("APP_ID") ?: "io.github.commutecapsule"
-        // 图标配色：接了自有数据源（src/extra）的构建用蓝底白车，开源版用深底金车，桌面上好区分
-        val ownBuild = file("src/extra").exists()
-        resValue("color", "launcher_bg", if (ownBuild) "#FF3D6BE0" else "#FF151C33")
-        resValue("color", "launcher_fg", if (ownBuild) "#FFFFFFFF" else "#FFE8C27A")
+        // 图标配色：存在可选扩展目录 src/extra 时使用备用配色（蓝底白车），否则使用默认配色（深底金车）
+        val hasExtra = file("src/extra").exists()
+        resValue("color", "launcher_bg", if (hasExtra) "#FF3D6BE0" else "#FF151C33")
+        resValue("color", "launcher_fg", if (hasExtra) "#FFFFFFFF" else "#FFE8C27A")
         minSdk = 31
         targetSdk = 36
         // 版本号：CI 由 git 标签算出 VERSION_NAME（如 0.4.0 或 0.4.1-dev.12），versionCode = 主*10000+次*100+修订

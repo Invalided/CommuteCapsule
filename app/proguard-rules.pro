@@ -7,10 +7,10 @@
 # JSON is read and written with explicit string keys, so field and property
 # names do not need to be preserved.
 
-# Optional data-source extension (docs/DATA_SOURCE.md). Transit loads
-# com.busnotice.commute.extra.Extras by class name and reads its INSTANCE field
-# and getSources() method reflectively. The rule has no effect when no
-# extension is present.
+# Optional extension entry point (docs/DATA_SOURCE.md), loaded by class name
+# via reflection: Transit loads com.busnotice.commute.extra.Extras and reads its
+# INSTANCE field and getSources() method. The rule has no effect when the
+# optional src/extra directory is absent.
 -keep class com.busnotice.commute.extra.** { *; }
 
 # Source interfaces implemented by extension classes.
