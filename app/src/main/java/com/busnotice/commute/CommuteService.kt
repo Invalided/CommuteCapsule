@@ -216,6 +216,8 @@ class CommuteService : Service() {
     private enum class Power { OFF, LOW, HIGH }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    /** 偏离识别（观察模式）：只写诊断事件，不影响提醒、行程进度与学习 */
+    private val devShadow = DeviationShadow(scope)
     private var loop: Job? = null
     private var lm: LocationManager? = null
     private var power: Power? = null
@@ -317,6 +319,7 @@ class CommuteService : Service() {
         locBlockedReason = null
         TraceLog.event("dev", "what" to (if (Health.screenOn(this)) "screen_on" else "screen_off"), "plugged" to Health.plugged(this))
         TraceLog.onCell = { snap -> scope.launch(Dispatchers.Main) { runCatching { onCell(snap) }.onFailure { Log.w(TAG, "基站处理失败", it) } } }
+        runCatching { devShadow.begin(this, t) }
         walkFixes.clear(); firstWalkDone = false; userRestarted = restart
         metroGate.reset(); enterVetoAt = 0L; cellExitAt = 0L; lastUgAt = 0L; surfaceSince = 0L; goodGpsAt = 0L; LiveNotifier.resetGate(); pendingArriveAlert = null; if (metroRideOn) fpRec.finish(); metroRideOn = false; tacLearner = null
         stationAt = 0L; metroRideSec.clear(); metroRoutes.clear(); alightAt = 0L; fenceFixes.clear(); stillSince = 0L; lastFastAt = 0L; rideLearned = false; stopAlerted = ""
@@ -1235,7 +1238,7 @@ class CommuteService : Service() {
                 .filter { it.accuracy < 200 && it.time <= now + 5_000 }
                 .maxByOrNull { it.time }
             val cur = best
-            if (cached != null && (cur == null || cached.time > cur.time)) { best = cached; TraceLog.loc(cached) }
+            if (cached != null && (cur == null || cached.time > cur.time)) { best = cached; TraceLog.loc(cached); runCatching { devShadow.fix(cached) } }
         }
         val b = best?.takeIf { it.accuracy < 200 } ?: return null
         val age = now - b.time
@@ -1836,6 +1839,7 @@ class CommuteService : Service() {
         if (lastLocAt > 0 && nowL - lastLocAt > 3 * 60_000L) TraceLog.event("loc_gap", "sec" to (nowL - lastLocAt) / 1000)
         lastLocAt = nowL
         TraceLog.loc(loc)
+        runCatching { devShadow.fix(loc) }
         placeFix(loc)
         val spd = speedOf(loc)
         val cur = best
@@ -2583,6 +2587,7 @@ class CommuteService : Service() {
     }
 
     private fun onCell(s: CellSnap) {
+        runCatching { devShadow.cell(s) }
         if (!::trip.isInitialized || tail || finishing) return
         val l = tacLearner ?: MetroCells.load(this).also { tacLearner = it }
         if (l.migrated) {
@@ -2738,6 +2743,7 @@ class CommuteService : Service() {
         TraceLog.onCell = null
         if (!finishing && !tail) placeVotes()
         if (tail && !finishing) TraceLog.event("tail_end", "after" to (System.currentTimeMillis() - tailStart) / 1000)
+        runCatching { devShadow.end() }
         TraceLog.event("finish", "leg" to legIdx, "riding" to riding)
         TraceLog.stop()
         finishing = true

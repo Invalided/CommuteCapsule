@@ -324,10 +324,11 @@ object TraceLog {
             }
             arr.put(o); keys += "${o.optString("type")}:${o.opt("id")}:${o.opt("pci")}"
         }
-        onCell?.let { cb -> runCatching { cb(CellSnap(System.currentTimeMillis(), nrTac, nrId, lteTac, lteId)) } }
         // 只在服务基站变化时记一条（信号强度变化不算）
         val key = keys.sorted().joinToString("|")
-        if (key == lastCell) return
+        val changed = key != lastCell
+        onCell?.let { cb -> runCatching { cb(CellSnap(System.currentTimeMillis(), nrTac, nrId, lteTac, lteId, recorded = changed)) } }
+        if (!changed) return
         val first = lastCell.isEmpty()
         lastCell = key
         if (!first) noteCellChange(System.currentTimeMillis())

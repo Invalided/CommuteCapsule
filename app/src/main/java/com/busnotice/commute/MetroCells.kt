@@ -5,8 +5,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/** 一次基站采样（TraceLog 每 5 秒查一次服务基站时给出；拿不到的项为 null） */
-data class CellSnap(val t: Long, val nrTac: Int?, val nrId: Long?, val lteTac: Int?, val lteId: Int?) {
+/**
+ * 一次基站采样（TraceLog 每 5 秒查一次服务基站时给出；拿不到的项为 null）。
+ * [recorded] 为 true 表示服务小区与上一次不同、本次采样写入了行程记录。
+ */
+data class CellSnap(val t: Long, val nrTac: Int?, val nrId: Long?, val lteTac: Int?, val lteId: Int?, val recorded: Boolean = false) {
     /** 4G 基站号（eNB）= 小区号去掉最后 8 位扇区号；同一个站台 / 隧道段的几个扇区归成一个 */
     val enb: Int? get() = lteId?.takeIf { it in 1..0x0FFFFFFF }?.let { it ushr 8 }
 }
