@@ -12,7 +12,7 @@ import androidx.compose.ui.unit.sp
 import com.busnotice.commute.Places
 import com.busnotice.commute.Transit
 
-/** 设置：家和公司、线路数据、设置检查、首次引导、系统备份 */
+/** 设置：家和公司、线路数据、设置检查、首次引导、系统备份、迁移、更新、学习数据 */
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
@@ -84,6 +84,20 @@ fun SettingsScreen(
                 supporting = "恢复到 " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(undoAt)) +
                     " 导入之前的数据；导入后 7 天内可撤销一次",
                 onClick = { undoOpen = true })
+        }
+        sectionHeader("更新")
+        item {
+            var preOn by remember { mutableStateOf(com.busnotice.commute.Updater.includePrerelease(ctx)) }
+            GlassRow(
+                headline = "接收测试版更新",
+                supporting = "测试版可能不稳定",
+                onClick = { preOn = !preOn; com.busnotice.commute.Updater.setIncludePrerelease(ctx, preOn) },
+                trailing = {
+                    androidx.compose.material3.Switch(checked = preOn, onCheckedChange = {
+                        preOn = it; com.busnotice.commute.Updater.setIncludePrerelease(ctx, it)
+                    })
+                },
+            )
         }
         sectionHeader("学习数据")
         item {

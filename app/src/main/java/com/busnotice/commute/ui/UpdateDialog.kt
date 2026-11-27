@@ -56,7 +56,7 @@ fun UpdateDialog(tick: Int) {
     AlertDialog(
         onDismissRequest = { if (!downloading) rel = null },
         shape = DialogShape, containerColor = Fuse.surface(dark), titleContentColor = ink, textContentColor = ink,
-        title = { Text("有新版本 v${r.name}") },
+        title = { Text(if (r.prerelease) "有新测试版 v${r.name}" else "有新版本 v${r.name}") },
         text = {
             Column {
                 Text("当前 v${Updater.currentName(ctx)}。" + if (error) "下载失败，网络不好时可以稍后再试。" else "")
@@ -86,7 +86,7 @@ fun UpdateDialog(tick: Int) {
         dismissButton = {
             if (!downloading) Row2(
                 onLater = { rel = null },
-                onSkip = { Updater.skip(ctx, r.build); rel = null },
+                onSkip = { Updater.skip(ctx, r); rel = null },
             )
         },
     )
