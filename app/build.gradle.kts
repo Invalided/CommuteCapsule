@@ -40,12 +40,24 @@ android {
         buildTypes { debug { signingConfig = signingConfigs.getByName("fixed") } }
     }
 
+    buildTypes {
+        release {
+            // R8 代码压缩与混淆、未用资源移除；保留规则见 proguard-rules.pro
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
+
+    // 协程调试探针元数据仅供调试器使用，不打入安装包
+    packaging { resources { excludes += "DebugProbesKt.bin" } }
 
     // 可选扩展源码（如自定义数据源）：目录存在时参与编译，见 docs/DATA_SOURCE.md
     if (file("src/extra").exists()) {
