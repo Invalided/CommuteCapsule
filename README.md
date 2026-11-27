@@ -67,7 +67,7 @@ cp -r examples/json-source app/src/extra   # 复制模板
 
 ## 构建
 
-推送到 GitHub 后 Actions 自动编译并跑单元测试；打 `v主.次.修订` 标签时发布正式版到 Releases，说明取自 [CHANGELOG.md](CHANGELOG.md)。默认包名为 `io.github.commutecapsule`，可通过环境变量 `APP_ID` 修改。需要固定签名时，在仓库 Secrets 里配置 `SIGNING_KEYSTORE_B64`、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`、`SIGNING_KEY_PASSWORD`；不配置则使用 Android 默认调试签名。
+推送到 GitHub 后 Actions 自动编译 release APK 并运行单元测试与 lint；打 `v主.次.修订` 标签时发布正式版到 Releases，打 `v主.次.修订-后缀` 标签（如 `v0.5.0-beta.1`）时发布测试版（GitHub 预发布版本），说明取自 [CHANGELOG.md](CHANGELOG.md)，R8 映射文件 `mapping.txt` 一并附上。默认包名为 `io.github.commutecapsule`，可通过环境变量 `APP_ID` 修改。需要固定签名时，在仓库 Secrets 里配置 `SIGNING_KEYSTORE_B64`、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`、`SIGNING_KEY_PASSWORD`，debug 与 release 构建均使用该签名；不配置则使用 Android 默认调试签名。
 
 要求 Android 12+（`minSdk 31`），实时通知胶囊需要 Android 16。
 

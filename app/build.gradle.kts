@@ -26,9 +26,12 @@ android {
         buildConfigField("String", "UPDATE_REPO", "\"" + (System.getenv("GITHUB_REPOSITORY") ?: "") + "\"")
     }
 
-    // 签名：CI 里有 SIGNING_KEYSTORE_B64 等密钥时用固定签名（每次构建可覆盖安装），否则用 Android 默认调试签名
+    // 签名：提供 SIGNING_KEYSTORE_PATH 等环境变量（CI 中来自仓库 Secrets）时，debug 与 release 均使用固定签名，
+    // 各次构建可相互覆盖安装；未提供时 debug 使用 Android 默认调试签名，release 回退到同一调试签名，
+    // 以保证 fork 与 Pull Request 的构建也能产出可安装的 APK
     val ks = System.getenv("SIGNING_KEYSTORE_PATH")
-    if (!ks.isNullOrEmpty() && file(ks).exists()) {
+    val hasFixedKey = !ks.isNullOrEmpty() && file(ks).exists()
+    if (hasFixedKey) {
         signingConfigs {
             create("fixed") {
                 storeFile = file(ks)
@@ -37,12 +40,15 @@ android {
                 keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
             }
         }
-        buildTypes { debug { signingConfig = signingConfigs.getByName("fixed") } }
     }
 
     buildTypes {
+        debug {
+            if (hasFixedKey) signingConfig = signingConfigs.getByName("fixed")
+        }
         release {
-            // R8 代码压缩与混淆、未用资源移除；保留规则见 proguard-rules.pro
+            signingConfig = signingConfigs.getByName(if (hasFixedKey) "fixed" else "debug")
+            // R8 代码压缩与优化、未用资源移除；不做名称混淆。保留规则见 proguard-rules.pro
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

@@ -115,9 +115,15 @@
 - 移除已无调用方的 `Learn.autoAdjust`；用户设置的时间窗只由用户修改，学习结果仅作为建议
 
 ### 构建与持续集成
-- release 构建类型启用 R8 代码压缩、优化与混淆（`isMinifyEnabled`），并移除未使用的资源（`isShrinkResources`）；保留规则见 `app/proguard-rules.pro`
+- release 构建类型启用 R8 代码压缩与优化（`isMinifyEnabled`），并移除未使用的资源（`isShrinkResources`）；保留规则见 `app/proguard-rules.pro`
+- R8 不做名称混淆（`-dontobfuscate`），崩溃堆栈中的类名与方法名保持可读
 - 保留规则覆盖按类名反射加载的可选数据源扩展入口及数据源接口；清单中声明的组件由构建工具自动保留
-- 保留源文件名与行号，诊断信息中的堆栈可用构建生成的 `mapping.txt` 还原
+- 保留源文件名与行号，诊断信息堆栈中的内联帧可用构建生成的 `mapping.txt` 展开
+- release 构建类型使用与 debug 相同的固定签名（配置了签名密钥时）；未配置时回退到调试签名，fork 与 Pull Request 的构建不受影响
+- CI 改为构建 release APK，并运行 release 单元测试与 lint（`assembleRelease testReleaseUnitTest lintRelease`）；R8 映射文件 `mapping.txt` 作为构建产物上传，发版时一并作为 Release 附件
+- 新增测试版发布渠道：`vX.Y.Z-后缀` 形式的标签（如 `-alpha.1`、`-beta.1`、`-rc.1`）发布为 GitHub 预发布版本，不标记为最新版本；仅 `vX.Y.Z` 标签的正式版标记为最新版本
+- 测试版发布说明取自 CHANGELOG 中对应版本的小节，没有对应小节时取「未发布」小节；标签格式不符时 CI 直接报错
+- 版本号计算兼容带后缀的标签：versionCode 仅由主、次、修订号计算，同一版本的测试版与正式版相同，测试版须先于对应正式版发布；开发构建在最近的标签为测试版时沿用其主、次、修订号
 - 安装包不再包含协程调试探针元数据（`DebugProbesKt.bin`）
 - CI 构建或测试失败时，在日志中单独列出编译错误与失败用例（含断言信息与精简堆栈），并生成源码行注解和运行摘要
 - 新增单元测试：无坐标线路的序列化与推算文案、搜索来源合并与站名比对、家和公司手动设置格式、保活体检品牌识别

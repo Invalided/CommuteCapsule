@@ -2,7 +2,8 @@ name: build
 on:
   push:
     branches: [main]
-    tags: ['v*.*.*']
+    # 正式版标签 vX.Y.Z；测试版标签 vX.Y.Z-后缀（如 -alpha.1、-beta.1、-rc.1）
+    tags: ['v*.*.*', 'v*.*.*-*']
   pull_request:
   workflow_dispatch:
 
@@ -26,20 +27,36 @@ jobs:
         with:
           gradle-version: '8.14.3'
 
-      # 版本号：打 v 标签时就是标签本身；平时是「上一个标签的下一个修订号-dev.运行号」
+      # 版本号：打 v 标签时取标签本身，带后缀的标签标记为测试版（PRERELEASE=true）。
+      # 其余构建为开发版：上一个标签为正式版 vX.Y.Z 时取 X.Y.(Z+1)-dev.运行号；
+      # 为测试版 vX.Y.Z-后缀 时取 X.Y.Z-dev.运行号（对应的正式版尚未发布）。
+      # versionCode 只由主、次、修订号计算（见 app/build.gradle.kts），同一版本的测试版与正式版相同。
       - name: Version
         run: |
+          PRE=false
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             V="${GITHUB_REF_NAME#v}"
+            if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::标签 $GITHUB_REF_NAME 不符合 vX.Y.Z 或 vX.Y.Z-后缀 格式"
+              exit 1
+            fi
+            [[ "$V" == *-* ]] && PRE=true
           else
             LAST=$(git describe --tags --abbrev=0 --match 'v*.*.*' 2>/dev/null || echo v0.3.0)
-            IFS=. read -r A B C <<< "${LAST#v}"
-            V="$A.$B.$((C+1))-dev.${{ github.run_number }}"
+            CORE="${LAST#v}"; CORE="${CORE%%-*}"
+            IFS=. read -r A B C <<< "$CORE"
+            if [[ "$LAST" == *-* ]]; then
+              V="$A.$B.$C-dev.${{ github.run_number }}"
+            else
+              V="$A.$B.$((C+1))-dev.${{ github.run_number }}"
+            fi
           fi
           echo "VERSION_NAME=$V" >> "$GITHUB_ENV"
-          echo "版本 $V"
+          echo "PRERELEASE=$PRE" >> "$GITHUB_ENV"
+          echo "版本 $V（测试版：$PRE）"
 
-      # 固定签名（可选）：仓库 Secrets 里配了才用，否则用默认调试签名
+      # 固定签名（可选）：仓库 Secrets 中配置了才使用；未配置时（如 fork 与 Pull Request）
+      # debug 与 release 均使用本次运行生成的调试签名，构建照常完成，但产物不能覆盖安装固定签名的版本
       - name: Signing key
         env:
           KS: ${{ secrets.SIGNING_KEYSTORE_B64 }}
@@ -47,6 +64,8 @@ jobs:
           if [ -n "$KS" ]; then
             echo "$KS" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "::warning::未配置固定签名，发布的 APK 将使用临时调试签名，无法覆盖安装此前的版本"
           fi
 
       - name: Build and test
@@ -56,15 +75,18 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           set -o pipefail
-          gradle --no-daemon assembleDebug testDebugUnitTest 2>&1 | tee "$RUNNER_TEMP/build.log"
+          gradle --no-daemon assembleRelease testReleaseUnitTest lintRelease 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # 构建或测试失败时：把编译错误和失败用例单独列出，并写入运行摘要
       - name: Report build failures
         if: failure()
         run: python3 .github/scripts/report_failures.py "$RUNNER_TEMP/build.log" app/build/test-results
 
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk "CommuteCapsule-$VERSION_NAME.apk"
+      # 产物：release APK 与 R8 映射文件（展开堆栈中的内联帧用）
+      - name: Rename outputs
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "CommuteCapsule-$VERSION_NAME.apk"
+          cp app/build/outputs/mapping/release/mapping.txt "CommuteCapsule-$VERSION_NAME-mapping.txt"
 
       # 确认数据源模板能编译（不影响上面已经打好的 APK）
       - name: Check example source
@@ -83,21 +105,37 @@ jobs:
           name: CommuteCapsule-${{ env.VERSION_NAME }}
           path: CommuteCapsule-${{ env.VERSION_NAME }}.apk
 
-      # 只有打标签才发正式版，说明取自 CHANGELOG.md 里对应版本那一节
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CommuteCapsule-${{ env.VERSION_NAME }}-mapping
+          path: CommuteCapsule-${{ env.VERSION_NAME }}-mapping.txt
+
+      # 只有打标签才发版。说明取自 CHANGELOG.md 中与版本号完全一致的小节；
+      # 测试版没有对应小节时取「[未发布]」小节，仍然没有时写「见 CHANGELOG.md」
       - name: Release notes
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          awk -v v="$VERSION_NAME" '
-            $0 ~ "^## \\[" v "\\]" {on=1; next}
-            on && /^## \[/ {exit}
-            on {print}
-          ' CHANGELOG.md > notes.md
+          section() {
+            awk -v h="## [$1]" '
+              index($0, h) == 1 {on=1; next}
+              on && /^## \[/ {exit}
+              on {print}
+            ' CHANGELOG.md
+          }
+          section "$VERSION_NAME" > notes.md
+          if [ ! -s notes.md ] && [ "$PRERELEASE" = true ]; then
+            section "未发布" > notes.md
+          fi
           [ -s notes.md ] || echo "见 CHANGELOG.md" > notes.md
 
+      # 正式版标记为最新版本；测试版发布为 prerelease，不标记为最新版本
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: 通勤胶囊 v${{ env.VERSION_NAME }}
           body_path: notes.md
-          files: CommuteCapsule-${{ env.VERSION_NAME }}.apk
-          make_latest: true
+          files: |
+            CommuteCapsule-${{ env.VERSION_NAME }}.apk
+            CommuteCapsule-${{ env.VERSION_NAME }}-mapping.txt
+          prerelease: ${{ env.PRERELEASE == 'true' }}
+          make_latest: ${{ env.PRERELEASE != 'true' }}

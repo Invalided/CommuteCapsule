@@ -1,4 +1,9 @@
-# R8 keep rules for the release build type.
+# R8 configuration for the release build type.
+#
+# Code shrinking and optimization are enabled; obfuscation is disabled. The
+# source code is public, so renaming provides no protection, and unobfuscated
+# class and method names keep crash stack traces readable without retracing.
+-dontobfuscate
 #
 # Manifest components (activity, services, receivers, the backup agent and the
 # FileProvider) are kept by the rules AAPT2 generates from AndroidManifest.xml.
@@ -20,7 +25,7 @@
 # ZXing core is used for encoding and decoding recovery-code QR images only;
 # it uses no reflection and needs no keep rules.
 
-# Keep source file names and line numbers so that stack traces in exported
-# diagnostics can be retraced with mapping.txt.
+# Keep source file names and line numbers. Inlined frames in stack traces from
+# exported diagnostics can be expanded with the mapping.txt of the build.
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
