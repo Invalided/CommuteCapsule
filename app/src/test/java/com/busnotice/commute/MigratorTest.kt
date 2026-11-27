@@ -109,4 +109,20 @@ class MigratorTest {
         assertEquals(Migrator.Outcome.FAILED, Migrator.importReplace(bad, l, 1L) { true })
         assertEquals(before, l.traces.toMap())
     }
+    @Test fun compactedRecordsSurviveSnapshotAndRestoreVerbatim() {
+        val l = local()
+        val lines = listOf("""{"k":"ev","e":"start","t":1}""", """{"k":"acc","m":0.12,"t":2}""")
+        val block = localKey.encryptBlock(TraceBlock.encode(lines))
+        l.traces["2030-02-02_local000.jsonl"] = listOf(block, localKey.encrypt("""{"k":"ev","e":"stop","t":3}"""))
+        var undo: ByteArray? = null
+        assertEquals(Migrator.Outcome.OK, Migrator.importReplace(pkg(true), l, 99L) { undo = it; true })
+        // 快照按落盘原样保存压缩块，撤销后逐字节恢复且仍可读
+        assertTrue(Migrator.restore(MigrationPackage.read(undo!!), l))
+        val stored = l.traces["2030-02-02_local000.jsonl"]!!
+        assertEquals(block, stored[0])
+        assertEquals(lines + """{"k":"ev","e":"stop","t":3}""", RecordCodec.decodeLines(stored, localKey).text)
+        // 迁移包中的记录为明文：压缩块不可作为迁移包内容导入
+        val bad = pkg(true).copy(traces = mapOf("2030-01-01_imported.jsonl" to listOf(block)))
+        assertEquals(Migrator.Outcome.FAILED, Migrator.importReplace(bad, l, 100L) { true })
+    }
 }

@@ -17,12 +17,16 @@ import javax.crypto.spec.SecretKeySpec
  *
  * - 当前格式：`e2:<keyId>:` + Base64(IV(12 字节) | 密文 | GCM 标签(16 字节))，AES-256-GCM，每条记录独立随机 IV；
  *   keyId 标明这条记录由哪一把数据密钥加密，读取时按 keyId 选择密钥。
+ * - 压缩块：`e3:<keyId>:` + Base64(IV(12 字节) | 密文 | GCM 标签(16 字节))，AES-256-GCM，
+ *   以前缀 `e3:<keyId>:` 为附加认证数据；明文为 [TraceBlock] 编码的一组记录（首字节为编码方式）。
+ *   一行压缩块解开后得到多条记录，位置与顺序同其他行一样按行序排列。
  * - 旧格式：`e1:` + 同样的 Base64 内容，视为由初始密钥（keyId 为 [LEGACY_ID]）加密。
  * - 不带前缀的内容按旧版本明文读取。
  */
 object RecordFormat {
     const val PREFIX_V1 = "e1:"
     const val PREFIX_V2 = "e2:"
+    const val PREFIX_BLOCK = "e3:"
     /** 初始密钥的标识：e1 记录与升级前生成的数据密钥 */
     const val LEGACY_ID = "0"
     const val IV_LEN = 12
@@ -30,25 +34,32 @@ object RecordFormat {
     const val KEY_BYTES = 32
     private val ID_RE = Regex("^[0-9a-z]{1,16}$")
 
-    fun isEncrypted(s: String) = s.startsWith(PREFIX_V1) || s.startsWith(PREFIX_V2)
+    fun isEncrypted(s: String) = s.startsWith(PREFIX_V1) || s.startsWith(PREFIX_V2) || s.startsWith(PREFIX_BLOCK)
+
+    /** 是否为压缩块（一行包含多条记录） */
+    fun isBlock(s: String) = s.startsWith(PREFIX_BLOCK)
+
+    private fun prefixed(s: String) = when {
+        s.startsWith(PREFIX_V2) -> PREFIX_V2
+        s.startsWith(PREFIX_BLOCK) -> PREFIX_BLOCK
+        else -> null
+    }
 
     fun validId(id: String) = ID_RE.matches(id)
 
     /** 记录所用密钥的标识；明文或格式错误时返回 null */
     fun keyIdOf(s: String): String? = when {
         s.startsWith(PREFIX_V1) -> LEGACY_ID
-        s.startsWith(PREFIX_V2) -> {
-            val end = s.indexOf(':', PREFIX_V2.length)
-            if (end < 0) null else s.substring(PREFIX_V2.length, end).takeIf(::validId)
+        else -> prefixed(s)?.let { p ->
+            val end = s.indexOf(':', p.length)
+            if (end < 0) null else s.substring(p.length, end).takeIf(::validId)
         }
-        else -> null
     }
 
     /** 记录中 Base64 部分；明文或格式错误时返回 null */
     fun payloadOf(s: String): String? = when {
         s.startsWith(PREFIX_V1) -> s.substring(PREFIX_V1.length)
-        s.startsWith(PREFIX_V2) -> s.indexOf(':', PREFIX_V2.length).takeIf { it >= 0 }?.let { s.substring(it + 1) }
-        else -> null
+        else -> prefixed(s)?.let { p -> s.indexOf(':', p.length).takeIf { it >= 0 }?.let { s.substring(it + 1) } }
     }
 }
 
@@ -63,6 +74,9 @@ class RecordCipher(
     private val enc = Cipher.getInstance("AES/GCM/NoPadding")
     private val dec = Cipher.getInstance("AES/GCM/NoPadding")
 
+    /** 压缩块的加解密（独立的 Cipher 实例与锁） */
+    internal val blockCipher by lazy { BlockCipher(key, id, random) }
+
     @Synchronized
     fun encrypt(plain: String): String {
         val iv = ByteArray(RecordFormat.IV_LEN).also(random::nextBytes)
@@ -74,6 +88,7 @@ class RecordCipher(
     /** 解密一条带前缀的记录；格式错误、密钥不符或内容被改动时返回 null */
     @Synchronized
     fun decrypt(record: String): String? = runCatching {
+        if (RecordFormat.isBlock(record)) return null
         val p = RecordFormat.payloadOf(record) ?: return null
         val b = Base64.getDecoder().decode(p.trim())
         if (b.size < RecordFormat.IV_LEN + RecordFormat.TAG_BITS / 8) return null
@@ -82,13 +97,46 @@ class RecordCipher(
     }.getOrNull()
 }
 
-/** 读取结果：[text] 为可用内容；[unreadable] 为无法解密而跳过的记录数 */
+/** 用一把 AES 密钥加解密压缩块（`e3` 行）；与 [RecordCipher] 共用密钥与标识 */
+fun RecordCipher.encryptBlock(payload: ByteArray): String = blockCipher.encrypt(payload)
+
+/** 解密一行压缩块，返回 [TraceBlock] 编码内容；格式错误、密钥不符或内容被改动时返回 null */
+fun RecordCipher.decryptBlock(record: String): ByteArray? = blockCipher.decrypt(record)
+
+/** 压缩块的整块 AES-GCM 加解密，附加认证数据为行前缀 `e3:<keyId>:` */
+internal class BlockCipher(private val key: SecretKey, private val id: String, private val random: SecureRandom) {
+    private val enc = Cipher.getInstance("AES/GCM/NoPadding")
+    private val dec = Cipher.getInstance("AES/GCM/NoPadding")
+    private val prefix = RecordFormat.PREFIX_BLOCK + id + ":"
+    private val aad = prefix.toByteArray(Charsets.US_ASCII)
+
+    @Synchronized
+    fun encrypt(payload: ByteArray): String {
+        val iv = ByteArray(RecordFormat.IV_LEN).also(random::nextBytes)
+        enc.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(RecordFormat.TAG_BITS, iv))
+        enc.updateAAD(aad)
+        val ct = enc.doFinal(payload)
+        return prefix + Base64.getEncoder().encodeToString(iv + ct)
+    }
+
+    @Synchronized
+    fun decrypt(record: String): ByteArray? = runCatching {
+        if (!record.startsWith(prefix)) return null
+        val b = Base64.getDecoder().decode(record.substring(prefix.length).trim())
+        if (b.size < RecordFormat.IV_LEN + RecordFormat.TAG_BITS / 8) return null
+        dec.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(RecordFormat.TAG_BITS, b, 0, RecordFormat.IV_LEN))
+        dec.updateAAD(aad)
+        dec.doFinal(b, RecordFormat.IV_LEN, b.size - RecordFormat.IV_LEN)
+    }.getOrNull()
+}
+
+/** 读取结果：[text] 为可用内容；[unreadable] 为无法解密而跳过的记录数（一个压缩块计 1） */
 data class Decoded(val text: List<String>, val unreadable: Int)
 
 object RecordCodec {
     /**
-     * 逐行解码：密文行按其 keyId 取密钥解密，旧版明文行原样保留，空行忽略；
-     * 没有对应密钥或解密失败的行跳过并计数（文件本身不改动）。
+     * 逐行解码：密文行按其 keyId 取密钥解密，压缩块展开为其中的各条记录，旧版明文行原样保留，空行忽略；
+     * 没有对应密钥或解密、解码失败的行跳过并计数（文件本身不改动）。
      */
     fun decodeLines(lines: List<String>, keys: (String) -> RecordCipher?): Decoded {
         val out = ArrayList<String>(lines.size)
@@ -96,6 +144,11 @@ object RecordCodec {
         for (l in lines) {
             if (l.isEmpty()) continue
             if (!RecordFormat.isEncrypted(l)) { out += l; continue }
+            if (RecordFormat.isBlock(l)) {
+                val block = RecordFormat.keyIdOf(l)?.let(keys)?.decryptBlock(l)?.let(TraceBlock::decode)
+                if (block == null) bad++ else out += block
+                continue
+            }
             val p = RecordFormat.keyIdOf(l)?.let(keys)?.decrypt(l)
             if (p == null) bad++ else out += p
         }

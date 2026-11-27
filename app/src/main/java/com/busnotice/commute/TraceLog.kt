@@ -40,11 +40,10 @@ import kotlin.math.sqrt
  *  env   磁场 + 气压：每 2 秒一条。mm/msd = 磁场幅值均值/标准差（μT，列车牵引电机启停时会大幅波动），
  *        p = 气压均值（hPa，下扶梯约 −0.1 hPa/米、进出隧道有压力波）；手机没有对应传感器就不写那一项
  *  ev    状态：上车、换段、判断下车、提醒、手动结束等
- * 保留最近 30 天。
- * 落盘时每行单独加密（格式见 [RecordFormat]，读写经由 [TraceStore]），导出时解密为明文。
+ * 记录不按天数过期。当天落盘时每行单独加密（格式见 [RecordFormat]，读写经由 [TraceStore]）；
+ * 此前日期的文件在后台整理为压缩块（[TraceStore.compactAll]），读取与导出时透明还原为原始各行，导出为明文。
  */
 object TraceLog {
-    private const val KEEP_DAYS = 30L
     private const val CELL_EVERY_MS = 5_000L   // 地铁站间约 2 分钟，5 秒一查才不漏掉站台那一下的基站切换
 
     private var writer: OutputStreamWriter? = null
@@ -119,7 +118,7 @@ object TraceLog {
     fun start(ctx: Context, tripId: String, tripName: String) {
         stop()
         val c = ctx.applicationContext; app = c
-        prune(c)
+        TraceStore.compactLater(c)
         val f = File(dir(c), "${LocalDate.now()}_${tripId.take(8)}.jsonl")
         TraceStore.beginAppend(c, f)
         writer = OutputStreamWriter(FileOutputStream(f, true), Charsets.UTF_8)
@@ -345,12 +344,6 @@ object TraceLog {
         val o = JSONObject().put("cells", arr)
         if (nb.length() > 0) o.put("nb", nb)
         write("cell", o)
-    }
-
-    private fun prune(ctx: Context) {
-        val cut = LocalDate.now().minusDays(KEEP_DAYS).toString()
-        // 含有暂时无法读取、或不可恢复记录的文件不按保留期删除，由用户在设置检查中决定
-        dir(ctx).listFiles()?.forEach { if (it.name.take(10) < cut && TraceStore.prunable(ctx, it)) it.delete() }
     }
 
     private fun records(ctx: Context) = dir(ctx).listFiles { f -> f.isFile && !f.name.endsWith(RecordMigration.TMP_SUFFIX) }

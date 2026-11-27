@@ -21,7 +21,10 @@ object SurfaceProfiles {
      */
     fun load(ctx: Context, trip8: String, busLeg: Int, target: Point): DistProfile? = runCatching {
         val today = LocalDate.now().toString()
-        val files = File(ctx.filesDir, "traces").listFiles { f -> f.name.endsWith("_$trip8.jsonl") && !f.name.startsWith(today) }
+        // 记录不再过期，读取范围限定为最近 LEARN_DAYS 天，与此前保留期内的输入一致
+        val from = TraceStore.learnFrom()
+        val files = File(ctx.filesDir, "traces")
+            .listFiles { f -> f.name.endsWith("_$trip8.jsonl") && !f.name.startsWith(today) && f.name.take(10) >= from }
             ?.sortedBy { it.name } ?: return null
         val days = files.mapNotNull { f -> runCatching { series(TraceStore.readLines(ctx, f), busLeg, target) }.getOrNull() }.takeLast(KEEP_DAYS)
         if (days.isEmpty()) null else DistProfile(days)

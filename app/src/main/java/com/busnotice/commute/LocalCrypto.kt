@@ -8,6 +8,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.KeyStore
+import java.time.LocalDate
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
@@ -161,6 +162,12 @@ object LocalCrypto {
         return Status(readers.keys.toSet(), pending, lost)
     }
 
+    /** 当前密钥与按标识取可读密钥的函数，供整理压缩块使用；密钥暂不可用时返回 null */
+    fun blockKeys(ctx: Context): Pair<RecordCipher, (String) -> RecordCipher?>? {
+        val c = cipher(ctx) ?: return null
+        return c to { id: String -> readers[id] }
+    }
+
     /** 加密一条记录；密钥不可用时返回 null，调用方不写入（不以明文落盘） */
     fun encrypt(ctx: Context, plain: String): String? = runCatching { cipher(ctx)?.encrypt(plain) }.getOrNull()
 
@@ -202,13 +209,25 @@ object LocalCrypto {
 }
 
 /**
- * traces 目录（行程记录、公交到站采样等）的读写：所有写入逐行加密，读取时兼容旧版明文行。
- * 追加与迁移共用一把锁，迁移不会和写入交错；正在由 [TraceLog] 持续写入的文件不参与后台迁移。
+ * traces 目录（行程记录、公交到站采样等）的读写：所有写入逐行加密，读取时兼容旧版明文行与压缩块。
+ * 追加与迁移共用一把锁，迁移不会和写入交错；正在由 [TraceLog] 持续写入的文件不参与后台迁移与整理。
+ *
+ * 记录不按天数过期。当天的文件逐行加密追加；此前日期的文件由 [compactAll] 每天至多整理一次，
+ * 转为单行压缩块（见 [TraceCompaction]），读取时透明展开。
  */
 object TraceStore {
     val lock = Any()
     private const val DONE_FILE = "traces_encrypted_v1"
     private const val INDEX_FILE = "trace_key_index.json"
+    private const val COMPACT_DAY_FILE = "traces_compacted_day"
+    private val DATED = Regex("""^\d{4}-\d{2}-\d{2}_.+""")
+    private val compactLock = Any()
+
+    /**
+     * 学习类功能从原始行程记录回看的天数。记录本身不再过期，此值沿用此前的记录保留期，
+     * 使地铁基站序列、地面段曲线等学习的输入范围保持不变。
+     */
+    const val LEARN_DAYS = 30L
     private var openFile: File? = null
 
     /** 文件名 → （长度、修改时间、出现的密钥标识） */
@@ -269,6 +288,46 @@ object TraceStore {
         if (complete) runCatching { done.createNewFile() }
     }
 
+    /** 学习可读取的最早日期（含），按文件名前 10 位比较 */
+    fun learnFrom(today: LocalDate = LocalDate.now()): String = today.minusDays(LEARN_DAYS).toString()
+
+    /**
+     * 把今天以前的记录文件整理为压缩块（后台线程调用）。每天至多完整执行一次；
+     * 密钥暂不可用时不执行。正在写入的文件、含无法读取记录的文件跳过；失败的文件保持原样，次日再试。
+     * [force] 为 true 时忽略当天已执行的标记。返回整理成功的文件数。
+     */
+    fun compactAll(ctx: Context, force: Boolean = false): Int = synchronized(compactLock) {
+        val c = ctx.applicationContext
+        val today = LocalDate.now().toString()
+        val mark = File(c.noBackupFilesDir, COMPACT_DAY_FILE)
+        if (!force && runCatching { mark.readText().trim() }.getOrNull() == today) return 0
+        val (current, keys) = LocalCrypto.blockKeys(c) ?: return 0
+        val d = dir(c)
+        synchronized(lock) { TraceCompaction.cleanup(d) }
+        var done = 0; var failed = 0
+        files(c).forEach { f ->
+            if (!DATED.matches(f.name) || f.name.take(10) >= today) return@forEach
+            if (synchronized(lock) { f == openFile }) return@forEach
+            val r = TraceCompaction.compactFile(f, keys, current) { replace ->
+                synchronized(lock) { if (f == openFile) false else replace() }
+            }
+            when (r) {
+                TraceCompaction.Result.COMPACTED -> done++
+                TraceCompaction.Result.FAILED -> failed++
+                else -> Unit
+            }
+        }
+        if (failed > 0) Diag.note(c, "有 $failed 个行程记录文件本次未能整理为压缩格式，原文件保持不变，明天再试")
+        runCatching { FileKeyFiles.atomicWrite(mark, today.toByteArray()) }
+        done
+    }
+
+    /** 在后台线程整理（不阻塞调用方） */
+    fun compactLater(ctx: Context) {
+        val c = ctx.applicationContext
+        Thread({ runCatching { compactAll(c) } }, "trace-compact").start()
+    }
+
     // ---------- 密钥标识索引与无法读取的记录 ----------
 
     private fun loadIndex(ctx: Context) {
@@ -306,12 +365,6 @@ object TraceStore {
         val ids = synchronized(lock) { runCatching { f.useLines { RecordCodec.keyIds(it) } }.getOrDefault(emptySet()) }
         index[f.name] = IdEntry(len, mt, ids); indexDirty = true
         return ids
-    }
-
-    /** 文件能否按保留期删除：其中每条密文现在都能读（暂时读不了、或不可恢复的记录由用户决定，不自动删除） */
-    fun prunable(ctx: Context, f: File): Boolean {
-        val st = LocalCrypto.status(ctx) ?: return false
-        return keyIds(ctx, f).all { it in st.readable }
     }
 
     /** 重新统计无法读取的记录（后台线程调用）；密钥暂不可用时不更新 */

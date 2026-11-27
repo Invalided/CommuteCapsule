@@ -299,13 +299,17 @@ object MetroCells {
         rides
     }.getOrDefault(emptyList())
 
-    /** 从 traces/日期_行程.jsonl 里抽出每天这趟地铁的地下基站序列（今天的不算，可能还没坐完） */
+    /**
+     * 从 traces/日期_行程.jsonl 里抽出每天这趟地铁的地下基站序列（今天的不算，可能还没坐完）；
+     * 只回看最近 [TraceStore.LEARN_DAYS] 天。
+     */
     fun fromTraces(ctx: Context, trip8: String, isMetroTac: (Int?) -> Boolean, skipDays: Set<String>): List<List<Pair<Long, Long>>> {
         val today = java.time.LocalDate.now().toString()
+        val from = TraceStore.learnFrom()
         val files = File(ctx.filesDir, "traces").listFiles { x -> x.name.endsWith("_$trip8.jsonl") } ?: return emptyList()
         return files.mapNotNull { file ->
             val day = file.name.substringBefore('_')
-            if (day == today || day in skipDays) return@mapNotNull null
+            if (day == today || day < from || day in skipDays) return@mapNotNull null
             runCatching { MetroEta.traceRide(TraceStore.readLines(ctx, file), isMetroTac) }.getOrNull()
         }
     }
