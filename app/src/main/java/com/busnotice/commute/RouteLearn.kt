@@ -60,4 +60,45 @@ object RouteLearn {
             "tripSpeed" to Learn.busSpeed(ctx, trip.id, legIdx)?.toInt(), "routeSpeed" to busSpeed(ctx, key)?.toInt(),
         )
     }
+
+    // ---------- 上车位置样本（按线路 + 上车站） ----------
+    private const val BOARD_KEEP = 20
+
+    /** 上车站对应的线路键：段内所有候选关联同一线路且上车站相同时返回 */
+    fun boardKeyFor(leg: Leg): String? {
+        val cs = leg.candidates
+        if (cs.isEmpty() || cs.any { it.routeId.isEmpty() }) return null
+        return cs.map { "${it.routeId}|${ManualEntry.stationKey(it.stopName)}" }.distinct().singleOrNull()
+    }
+
+    fun parseSamples(raw: String): List<BoardPoint.Sample> = raw.split(';').mapNotNull { e ->
+        val f = e.split(',').takeIf { it.size == 5 } ?: return@mapNotNull null
+        BoardPoint.Sample(
+            f[0].toLongOrNull() ?: return@mapNotNull null, f[1].toDoubleOrNull() ?: return@mapNotNull null,
+            f[2].toDoubleOrNull() ?: return@mapNotNull null, f[3].toIntOrNull() ?: return@mapNotNull null,
+            f[4].toIntOrNull() ?: return@mapNotNull null,
+        )
+    }
+
+    fun formatSamples(list: List<BoardPoint.Sample>) = list.joinToString(";") { "${it.day},${it.lat},${it.lng},${it.accM},${it.weight}" }
+
+    /** 记一个上车样本并返回当前聚类结果；同一天只保留权重最高的一次 */
+    fun recordBoard(ctx: Context, key: String, s: BoardPoint.Sample): BoardPoint.Learned? {
+        val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val old = parseSamples(sp.getString("bp:$key", "") ?: "")
+        val same = old.firstOrNull { it.day == s.day }
+        val list = if (same != null && same.weight >= s.weight) old else (old.filter { it.day != s.day } + s).takeLast(BOARD_KEEP)
+        sp.edit().putString("bp:$key", formatSamples(list)).apply()
+        return BoardPoint.cluster(list)
+    }
+
+    // ---------- 手动与自动上车判断的差异统计 ----------
+    /** kind：false_auto（自动判断上车后用户点「未上车」）、manual_only（用户先于自动判断点「已上车」） */
+    fun recordMismatch(ctx: Context, scope: String, kind: String, source: String): Int {
+        val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val k = "bs:$scope|$kind|$source"
+        val n = sp.getInt(k, 0) + 1
+        sp.edit().putInt(k, n).apply()
+        return n
+    }
 }

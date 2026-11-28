@@ -339,7 +339,7 @@ object LiveNotifier {
             // 划走不等于结束：先隐藏，下次提醒再出来；要结束请点「结束/关闭」
             .setDeleteIntent(actionIntent(ctx, ActionReceiver.ACTION_DISMISSED))
             .apply {
-                if (CommuteService.undoActive()) addAction(0, "撤销上车", actionIntent(ctx, ActionReceiver.ACTION_BOARDED))
+                if (CommuteService.undoActive()) addAction(0, if (CommuteService.undoAuto.value) "未上车" else "撤销上车", actionIntent(ctx, ActionReceiver.ACTION_BOARDED))
                 else if (!v.riding) addAction(0, "已上车", actionIntent(ctx, ActionReceiver.ACTION_BOARDED))
             }
             .addAction(0, if (v.riding) "结束" else "关闭", actionIntent(ctx, ActionReceiver.ACTION_STOP))

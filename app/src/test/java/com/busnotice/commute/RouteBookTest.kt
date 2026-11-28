@@ -207,4 +207,33 @@ class RouteBookTest {
         assertEquals(300.0, RouteLearn.blend(null, 300.0), 0.01)
         assertEquals(230.0, RouteLearn.blend(200.0, 300.0), 0.01)
     }
+
+    private fun bp(day: Long, dLatM: Double, w: Int = 1) =
+        BoardPoint.Sample(day, 30.0 + dLatM / 111_320.0, 120.0, 20, w)
+
+    @Test fun boardClusterNeedsThreeDaysAndMajority() {
+        assertEquals(null, BoardPoint.cluster(listOf(bp(1, 0.0), bp(2, 10.0))))
+        val l = BoardPoint.cluster(listOf(bp(1, 0.0), bp(2, 20.0), bp(3, -20.0), bp(4, 900.0)))!!
+        assertEquals(3, l.days)
+        assertTrue(BoardPoint.distM(l.lat, l.lng, 30.0, 120.0) < 30)
+        // 两处各半时不算学会
+        assertEquals(null, BoardPoint.cluster(listOf(bp(1, 0.0), bp(2, 0.0), bp(3, 0.0), bp(4, 900.0), bp(5, 900.0), bp(6, 900.0))))
+    }
+
+    @Test fun manualSamplesOutweighAutomatic() {
+        val l = BoardPoint.cluster(listOf(bp(1, 0.0, 2), bp(2, 0.0, 2), bp(3, 0.0, 2), bp(4, 900.0), bp(5, 900.0), bp(6, 900.0)))!!
+        assertTrue(BoardPoint.distM(l.lat, l.lng, 30.0, 120.0) < 5)
+    }
+
+    @Test fun boardSamplesRoundTrip() {
+        val list = listOf(bp(1, 0.0, 2), bp(2, 10.0))
+        assertEquals(list, RouteLearn.parseSamples(RouteLearn.formatSamples(list)))
+        assertEquals(emptyList<BoardPoint.Sample>(), RouteLearn.parseSamples(""))
+    }
+
+    @Test fun boardKeyIgnoresAlightingStop() {
+        val a = ride("7", "东站", "西站").copy(routeId = "r1")
+        assertEquals("r1|东", RouteLearn.boardKeyFor(Leg(listOf(a, a.copy(alightName = "北站")))))
+        assertEquals(null, RouteLearn.boardKeyFor(Leg(listOf(a, a.copy(stopName = "南站")))))
+    }
 }

@@ -154,6 +154,8 @@ class CommuteService : Service() {
         private const val EXTRA_RESTART = "restart"
         private const val MANUAL_RUN_MS = 30 * 60_000L
         private const val UNDO_MS = 2 * 60_000L
+        /** 用户否决自动判断后，本段暂停按车速判上车的时长 */
+        private const val SPEED_MUTE_MS = 10 * 60_000L
         /** 实时显示车已到站后，多长时间内出现车速定位即判上车（毫秒） */
         const val BUS_AT_STOP_BOARD_MS = 8 * 60_000L
         /** 否决基站进站所需的 GPS 精度（米） */
@@ -173,6 +175,10 @@ class CommuteService : Service() {
         /** 手点「已上车」后 2 分钟内：按钮变「撤销」，再点是撤回不是跳下一段 */
         val undoUntil = MutableStateFlow(0L)
         fun undoActive() = undoUntil.value > System.currentTimeMillis()
+        /** 撤销窗口来自自动判断（按钮显示「未上车」）还是手点（显示「撤销上车」） */
+        val undoAuto = MutableStateFlow(false)
+        /** 自动判断中允许用户撤回的来源：单步的车速判断。刷卡、跳段等多步推进不提供撤回 */
+        private val UNDOABLE_AUTO = setOf("speed", "at_stop", "gps")
         private const val NEAR_STOP_M = 120.0
         @Volatile var instance: CommuteService? = null
 
@@ -523,20 +529,35 @@ class CommuteService : Service() {
         val metroAnchorIdx: Int, val metroAnchorAt: Long, val nearSince: Long, val transferAlerted: Boolean, val deadlineAt: Long,
     )
     private var boardSnap: BoardSnap? = null
+    private var boardSnapSource = ""        // 空 = 手点；否则为自动判断来源
+    // 用户否决自动判断后，本段在一段时间内不再按车速判上车
+    private var speedMuteLeg = -1
+    private var speedMuteUntil = 0L
+    private fun speedMuted() = legIdx == speedMuteLeg && System.currentTimeMillis() < speedMuteUntil
+
+    /** 差异统计的范围：关联线路时按线路 + 上车站，否则按行程段 */
+    private fun mismatchScope(i: Int): String =
+        trip.legs.getOrNull(i)?.let(RouteLearn::boardKeyFor) ?: "trip:${trip.id}#$i"
     // 地铁段手点的时刻：撤销窗口过了才拿去学，误点撤回的不学
     private var pendingLearnLeg = -1
     private var pendingLearnSec = 0
 
     private fun undoBoard() {
         val b = boardSnap ?: return
-        boardSnap = null; undoUntil.value = 0L; pendingLearnLeg = -1
+        val src = boardSnapSource
+        boardSnap = null; boardSnapSource = ""; undoUntil.value = 0L; undoAuto.value = false; pendingLearnLeg = -1
         legIdx = b.legIdx; boardedAt = b.boardedAt; riding = b.riding; stationAt = b.stationAt; stationByTap = b.stationByTap
         alightAt = b.alightAt; rideLearned = b.rideLearned; arriveAnchorAt = b.arriveAnchorAt; arriveAlertedAt = b.arriveAlertedAt
         pendingBoardAt = b.pendingBoardAt; pendingBoardLoc = b.pendingBoardLoc; ridingCand = b.ridingCand
         metroAnchorIdx = b.metroAnchorIdx; metroAnchorAt = b.metroAnchorAt; nearSince = b.nearSince; transferAlerted = b.transferAlerted
         alertedKey = null; speeds.clear(); routeHits.clear()
-        TraceLog.event("board_undo", "leg" to legIdx)
-        Diag.mark(this, "撤销了手点的「已上车」，回到第 ${legIdx + 1} 段")
+        TraceLog.event("board_undo", "leg" to legIdx, "auto" to src.ifEmpty { null })
+        if (src.isNotEmpty()) {
+            speedMuteLeg = legIdx; speedMuteUntil = System.currentTimeMillis() + SPEED_MUTE_MS
+            val n = RouteLearn.recordMismatch(this, mismatchScope(legIdx), "false_auto", src)
+            TraceLog.event("board_mismatch", "leg" to legIdx, "kind" to "false_auto", "src" to src, "n" to n)
+            Diag.mark(this, "自动判断的上车被否决，回到第 ${legIdx + 1} 段")
+        } else Diag.mark(this, "撤销了手点的「已上车」，回到第 ${legIdx + 1} 段")
         loop?.cancel()
         deadlineAt = b.deadlineAt
         loop = scope.launch { runLoop(b.deadlineAt) }
@@ -546,7 +567,7 @@ class CommuteService : Service() {
     /** 撤销窗口过了：手点的地铁上车时刻才算数 */
     private fun flushPendingLearn(now: Long) {
         if (undoUntil.value > now) return
-        boardSnap = null
+        boardSnap = null; boardSnapSource = ""; undoAuto.value = false
         val i = pendingLearnLeg
         if (i < 0) return
         pendingLearnLeg = -1
@@ -554,22 +575,34 @@ class CommuteService : Service() {
     }
 
     /** 「已上车」按钮或速度判断：进入下一段；最后一段则进入「去下车站」，再按一次结束 */
-    fun onBoarded(manual: Boolean = true, at: Long = System.currentTimeMillis()) {
+    fun onBoarded(manual: Boolean = true, at: Long = System.currentTimeMillis(), source: String = "") {
         if (!::trip.isInitialized) { finish(); return }
         if (tail) return
         // 手点后 2 分钟内再点 = 撤销（防误点 / 连点直接跳两段）
         if (manual && boardSnap != null && undoActive()) { undoBoard(); return }
         val now = at
-        TraceLog.event("boarded", "leg" to legIdx, "manual" to manual, "at" to at, "riding" to riding)
+        TraceLog.event("boarded", "leg" to legIdx, "manual" to manual, "at" to at, "riding" to riding, "src" to source.ifEmpty { null })
+        // 用户先于自动判断点了「已上车」：记一次，供统计自动判断偏慢或漏判的站点
+        if (manual && !riding && !jumping) {
+            val n = RouteLearn.recordMismatch(this, mismatchScope(legIdx), "manual_only", "-")
+            TraceLog.event("board_mismatch", "leg" to legIdx, "kind" to "manual_only", "n" to n)
+        }
         if (!riding && !jumping) logBoardPoint(legIdx, at, manual)
         if (manual) {
             if (legIdx >= trip.legs.size - 1 && riding) return
             boardSnap = BoardSnap(legIdx, boardedAt, riding, stationAt, stationByTap, alightAt, rideLearned, arriveAnchorAt, arriveAlertedAt,
                 pendingBoardAt, pendingBoardLoc, ridingCand, metroAnchorIdx, metroAnchorAt, nearSince, transferAlerted, deadlineAt)
+            boardSnapSource = ""; undoAuto.value = false
+            undoUntil.value = System.currentTimeMillis() + UNDO_MS
+        } else if (source in UNDOABLE_AUTO && !jumping && !(legIdx >= trip.legs.size - 1 && riding)) {
+            // 单步的自动判断：同样保留进度快照，通知中显示「未上车」供用户否决
+            boardSnap = BoardSnap(legIdx, boardedAt, riding, stationAt, stationByTap, alightAt, rideLearned, arriveAnchorAt, arriveAlertedAt,
+                pendingBoardAt, pendingBoardLoc, ridingCand, metroAnchorIdx, metroAnchorAt, nearSince, transferAlerted, deadlineAt)
+            boardSnapSource = source; undoAuto.value = true
             undoUntil.value = System.currentTimeMillis() + UNDO_MS
         } else if (boardSnap != null) {
-            // 自动判断接着推进了：之前那次手点就不再能撤
-            boardSnap = null; undoUntil.value = 0L
+            // 其他自动判断接着推进了：之前的快照就不再能撤
+            boardSnap = null; boardSnapSource = ""; undoUntil.value = 0L; undoAuto.value = false
         }
         stationAt = 0L
         if (manual && !riding && trip.legs[legIdx].isMetroOnly()) { pendingLearnLeg = legIdx; pendingLearnSec = LocalTime.now().toSecondOfDay() }
@@ -622,6 +655,15 @@ class CommuteService : Service() {
         val p = b?.let { BoardPoint.pick(at, it.latitude, it.longitude, it.accuracy, it.time) }
         TraceLog.event("board_point", "leg" to i, "at" to at, "manual" to manual, "tap" to boardingByTap,
             "lat" to p?.lat, "lng" to p?.lng, "acc" to p?.accM, "fixAt" to p?.fixAt)
+        // 旁路：按线路 + 上车站累积并聚类，结果只写入行程记录
+        val key = RouteLearn.boardKeyFor(leg) ?: return
+        if (p == null) return
+        val day = java.time.Instant.ofEpochMilli(at).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay()
+        val learned = runCatching {
+            RouteLearn.recordBoard(this, key, BoardPoint.Sample(day, p.lat, p.lng, p.accM, BoardPoint.weightOf(manual, boardingByTap)))
+        }.getOrNull()
+        TraceLog.event("board_point_shadow", "leg" to i, "learned" to (learned != null),
+            "lat" to learned?.lat, "lng" to learned?.lng, "days" to learned?.days, "n" to learned?.n, "share" to learned?.share)
     }
 
     /** 后台预取：沿线站点（判断是否在车上）和最后一段的下车站坐标（到站提醒） */
@@ -1868,10 +1910,10 @@ class CommuteService : Service() {
             val onLine = routeHits.size >= 3 && routeHits.toList().takeLast(3).all { it }
             // 不限于首段或未到达上车点的情况：换乘后（boardedAt 已有值）且未在站旁获得定位的公交段同样适用
             if (!trip.legs[legIdx].isMetroOnly() &&
-                (Motion.classify(speeds.toList(), onLine) == Motion.State.RIDE || busRideLikely())) {
+                !speedMuted() && (Motion.classify(speeds.toList(), onLine) == Motion.State.RIDE || busRideLikely())) {
                 TraceLog.event("bus_board", "by" to "gps", "near" to (nearSince > 0), "spd" to speeds.toList().toString(), "onLine" to routeHits.count { it })
                 speeds.clear(); routeHits.clear()
-                onBoarded(manual = false); return
+                onBoarded(manual = false, source = "gps"); return
             }
         }
 
@@ -1879,17 +1921,17 @@ class CommuteService : Service() {
 
         // 在站牌旁、实时显示所等的车刚到站，之后第一个可信车速定位即判上车（进程冻结时 GPS 稀疏，凑不齐 3 次快速定位）
         if (nearSince > 0 && busAtStopAt > 0 && loc.time - busAtStopAt in 0..BUS_AT_STOP_BOARD_MS && spd != null && trusted &&
-            spd > 6f && !trip.legs[legIdx].isMetroOnly() && onRoute(loc, trip.legs[legIdx])) {
+            spd > 6f && !trip.legs[legIdx].isMetroOnly() && !speedMuted() && onRoute(loc, trip.legs[legIdx])) {
             TraceLog.event("bus_board", "by" to "at_stop", "spd" to spd, "busAt" to busAtStopAt)
             val at = busAtStopAt
             busAtStopAt = 0L; speeds.clear(); routeHits.clear()
-            onBoarded(manual = false, at = at); return
+            onBoarded(manual = false, at = at, source = "at_stop"); return
         }
         // 到过上车点、现在速度很快 → 大概率上车了
         // 地铁段不看车速：站口附近跑两步、打车到站口都会被当成「车开了」；地铁上车只认刷卡 / 地下基站 / 列车晃动
-        if (nearSince > 0 && spd != null && trusted && spd > 6f && !trip.legs[legIdx].isMetroOnly()) {
+        if (nearSince > 0 && spd != null && trusted && spd > 6f && !trip.legs[legIdx].isMetroOnly() && !speedMuted()) {
             fastFixes++
-            if (fastFixes >= 3) onBoarded(manual = false)
+            if (fastFixes >= 3) onBoarded(manual = false, source = "speed")
         } else if (spd != null && trusted && spd < 1f && fastFixes > 0) {
             fastFixes--   // 红灯/进站停一下不清零，真停下来才慢慢减
         }
