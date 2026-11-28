@@ -1,5 +1,6 @@
 package com.busnotice.commute
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
@@ -21,6 +22,8 @@ class QuickTile : TileService() {
         }
     }
 
+    // Android 14 及以上使用 PendingIntent 版本；旧版本只有 Intent 版本可用
+    @SuppressLint("StartActivityAndCollapseDeprecated")
     override fun onClick() {
         super.onClick()
         if (CommuteService.instance != null) {
