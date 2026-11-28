@@ -1430,7 +1430,10 @@ class CommuteService : Service() {
             arriveAlert?.let { sendAlert(it) }
             if (byLoc && br != null && !restored && boardedAt > 0) {
                 val min = (now - boardedAt) / 60_000.0
-                if (min >= 3) Learn.recordBusSpeed(this, trip.id, legIdx, BusRide.lengthM(br) / min)
+                if (min >= 3) {
+                    Learn.recordBusSpeed(this, trip.id, legIdx, BusRide.lengthM(br) / min)
+                    trip.legs.getOrNull(legIdx)?.let(RouteLearn::keyFor)?.let { RouteLearn.recordBusSpeed(this, it, BusRide.lengthM(br) / min) }
+                }
             }
             TraceLog.event("ride_end", "by" to (if (byLoc) "loc" else "time"))
             // 最后一段是地铁、按位置到站：记下这次实际坐了多久（用于后续按站推算，避免过早提示即将到站）
@@ -2051,6 +2054,9 @@ class CommuteService : Service() {
     private fun learnRide(i: Int, minutes: Int) {
         if (i == joinLeg) return   // 只坐了一部分，不学这段乘车时长
         Learn.recordRide(this, trip.id, i, minutes)
+        trip.legs.getOrNull(i)?.let(RouteLearn::keyFor)?.let { k ->
+            RouteLearn.recordRide(this, k, minutes); RouteLearn.shadow(this, trip, i, k)
+        }
     }
 
     /**

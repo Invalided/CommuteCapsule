@@ -18,6 +18,7 @@
         <include domain="sharedpref" path="learn_ride2.xml" />
         <include domain="sharedpref" path="learn_bus_speed.xml" />
         <include domain="sharedpref" path="learn_metro.xml" />
+        <include domain="sharedpref" path="learn_route.xml" />
         <include domain="sharedpref" path="walk_learn.xml" />
         <include domain="sharedpref" path="leave_wifi.xml" />
         <include domain="sharedpref" path="keepalive.xml" />
@@ -33,6 +34,7 @@
         <include domain="sharedpref" path="learn_ride2.xml" />
         <include domain="sharedpref" path="learn_bus_speed.xml" />
         <include domain="sharedpref" path="learn_metro.xml" />
+        <include domain="sharedpref" path="learn_route.xml" />
         <include domain="sharedpref" path="walk_learn.xml" />
         <include domain="sharedpref" path="leave_wifi.xml" />
         <include domain="sharedpref" path="keepalive.xml" />

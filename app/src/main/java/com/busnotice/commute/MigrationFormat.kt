@@ -476,7 +476,7 @@ object MigrationPackage {
 
     /** 随迁移文件导出的 SharedPreferences，与系统备份白名单（res/xml/data_extraction_rules.xml）一致 */
     val PREFS: List<String> = listOf(
-        "trips", "routes", "transit", "places", "learn", "learn_ride2", "learn_bus_speed", "learn_metro",
+        "trips", "routes", "transit", "places", "learn", "learn_ride2", "learn_bus_speed", "learn_metro", "learn_route",
         "walk_learn", "leave_wifi", "keepalive", "onboarding", "backup",
     )
 

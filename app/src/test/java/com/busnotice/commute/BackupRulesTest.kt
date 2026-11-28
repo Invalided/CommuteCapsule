@@ -55,7 +55,7 @@ class BackupRulesTest {
 
     @Test fun tripsSettingsAndLearnedResultsAreBackedUp() {
         val cloud = includes(section(xml("data_extraction_rules.xml"), "cloud-backup"))
-        listOf("trips", "transit", "places", "learn", "learn_ride2", "learn_bus_speed", "learn_metro", "walk_learn", SystemBackup.PREFS)
+        listOf("trips", "transit", "places", "learn", "learn_ride2", "learn_bus_speed", "learn_metro", "learn_route", "walk_learn", SystemBackup.PREFS)
             .forEach { assertTrue(it, cloud.contains("sharedpref/$it.xml")) }
     }
 }

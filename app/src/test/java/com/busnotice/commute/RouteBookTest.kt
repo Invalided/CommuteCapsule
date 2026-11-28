@@ -192,4 +192,19 @@ class RouteBookTest {
         assertTrue(RouteDef.fromJson(base.copy(fromTrip = true).toJson()).fromTrip)
         assertFalse(RouteDef.fromJson(base.toJson()).fromTrip)
     }
+
+    @Test fun routeLearnKeyNeedsOneLinkedRoute() {
+        val a = ride("7", "东站", "西站").copy(routeId = "r1")
+        assertEquals("r1|东|西", RouteLearn.keyFor(Leg(listOf(a, a.copy(stopName = "东站 ")))))
+        assertEquals(null, RouteLearn.keyFor(Leg(listOf(a, ride("8", "东站", "西站").copy(routeId = "r2")))))
+        assertEquals(null, RouteLearn.keyFor(Leg(listOf(a, ride("8", "东站", "西站")))))
+        assertEquals(null, RouteLearn.keyFor(Leg(listOf(a.copy(alightName = "")))))
+    }
+
+    @Test fun routeLearnUsesSameRulesAsTripLearning() {
+        assertEquals(null, RouteLearn.median(listOf(20, 22)))
+        assertEquals(22, RouteLearn.median(listOf(25, 20, 22)))
+        assertEquals(300.0, RouteLearn.blend(null, 300.0), 0.01)
+        assertEquals(230.0, RouteLearn.blend(200.0, 300.0), 0.01)
+    }
 }
