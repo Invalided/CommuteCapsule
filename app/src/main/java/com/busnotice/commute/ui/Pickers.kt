@@ -57,6 +57,9 @@ import com.busnotice.commute.Loc
 import com.busnotice.commute.ManualEntry
 import com.busnotice.commute.StationCheck
 import com.busnotice.commute.StationMatch
+import com.busnotice.commute.RouteDef
+import com.busnotice.commute.RouteSearch
+import com.busnotice.commute.RouteStore
 import com.busnotice.commute.StopSearch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -145,6 +148,22 @@ private fun LazyListScope.routeEntry(onClick: (() -> Unit)?) {
     }
 }
 
+/** 搜索结果中「我的线路」的匹配项：线路名命中时进入选择上车站，站名命中时直接以该站上车 */
+private fun LazyListScope.routeHits(routes: List<RouteDef>, mode: Candidate.Type, query: String, onHit: ((RouteDef, String?) -> Unit)?) {
+    if (onHit == null) return
+    val hits = RouteSearch.search(routes, mode, query)
+    if (hits.isEmpty()) return
+    sectionHeader("我的线路")
+    glassGroup(hits, key = "my-routes") { h ->
+        GlassRow(
+            headline = h.stop ?: h.route.fullName(),
+            supporting = if (h.stop != null) "${h.route.fullName()} · 由此上车" else "${h.route.stops.first()} → ${h.route.stops.last()} · ${h.route.stops.size} 个站点",
+            leading = { PinIcon() },
+            onClick = { onHit(h.route, h.stop) },
+        )
+    }
+}
+
 /** 搜索结果末尾：「找不到？直接记下」 */
 private fun LazyListScope.manualEntryRow(query: String, emphasize: Boolean, what: String, onClick: () -> Unit) = item(key = "manual-entry") {
     val dark = isSystemInDarkTheme()
@@ -220,8 +239,12 @@ private sealed interface BusStage {
 
 /** 选公交：搜线路/站点，或从附近站点进入 → 选上车站 → 选下车站（可跳过） */
 @Composable
-fun BusPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes: (() -> Unit)? = null) {
+fun BusPicker(
+    onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes: (() -> Unit)? = null,
+    onRouteHit: ((RouteDef, String?) -> Unit)? = null,
+) {
     val ctx = LocalContext.current
+    val myRoutes = remember { RouteStore.all(ctx) }
     val scope = rememberCoroutineScope()
     // 没有可查询的数据源：直接进入「直接记下」
     val searchable = remember { StopSearch.available() }
@@ -305,8 +328,8 @@ fun BusPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes: (
         }
 
         BusStage.Search -> PickerScaffold("添加公交", onBack) {
-            routeEntry(onFromRoutes)
             item { SearchField(query, "搜线路号或站名") { query = it } }
+            if (query.isBlank()) routeEntry(onFromRoutes) else routeHits(myRoutes, Candidate.Type.BUS, query, onRouteHit)
             if (busy) loading()
             if (query.isBlank()) {
                 header("附近站点")
@@ -458,8 +481,12 @@ fun BusPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes: (
 
 /** 地铁没有实时数据：选站 + 填线路名、发车间隔和下车站；查不到的站可以直接记下 */
 @Composable
-fun MetroPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes: (() -> Unit)? = null) {
+fun MetroPicker(
+    onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes: (() -> Unit)? = null,
+    onRouteHit: ((RouteDef, String?) -> Unit)? = null,
+) {
     val ctx = LocalContext.current
+    val myRoutes = remember { RouteStore.all(ctx) }
     val searchable = remember { StopSearch.available() }
     var query by remember { mutableStateOf("") }
     var result by remember { mutableStateOf<List<SearchStation>?>(null) }
@@ -521,8 +548,8 @@ fun MetroPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes:
         }
     } else if (c == null) {
         PickerScaffold("添加地铁", onBack) {
-            routeEntry(onFromRoutes)
             item { SearchField(query, "搜地铁站名") { query = it } }
+            if (query.isBlank()) routeEntry(onFromRoutes) else routeHits(myRoutes, Candidate.Type.METRO, query, onRouteHit)
             val r = result
             when {
                 query.isBlank() -> hint("输入在哪个地铁站上车")

@@ -556,13 +556,19 @@ fun hasRoutesFor(ctx: android.content.Context, mode: Candidate.Type): Boolean = 
  * 生成的候选与「直接记下」相同（无坐标，位置在乘车过程中学习），不改变提醒与预测逻辑。
  */
 @Composable
-fun RouteChooser(mode: Candidate.Type, onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
+fun RouteChooser(
+    mode: Candidate.Type, onBack: () -> Unit, onPicked: (Candidate) -> Unit,
+    initialRoute: RouteDef? = null, initialBoard: String? = null,
+) {
     val ctx = LocalContext.current
     val routes = remember { RouteStore.all(ctx).filter { it.mode == mode } }
-    var route by remember { mutableStateOf<RouteDef?>(null) }
-    var board by remember { mutableStateOf<String?>(null) }
+    var route by remember { mutableStateOf(initialRoute) }
+    var board by remember { mutableStateOf(initialBoard?.takeIf { initialRoute != null }) }
     val r = route; val b = board
-    BackHandler { if (b != null) board = null else if (r != null) route = null else onBack() }
+    // 从搜索结果进入时已预选线路或上车站：返回预选的那一步时回到搜索页
+    fun backFromBoard() { if (initialBoard != null && initialRoute != null) onBack() else board = null }
+    fun backFromRoute() { if (initialRoute != null) onBack() else route = null }
+    BackHandler { if (b != null) backFromBoard() else if (r != null) backFromRoute() else onBack() }
     when {
         r == null -> GlassPage(title = "选择线路", onBack = onBack) {
             if (routes.isEmpty()) item { Hint("暂无该交通方式的线路，可在「设置 → 我的线路」中新建。") }
@@ -571,7 +577,7 @@ fun RouteChooser(mode: Candidate.Type, onBack: () -> Unit, onPicked: (Candidate)
                     onClick = { route = x })
             }
         }
-        b == null -> GlassPage(title = "选择上车站", onBack = { route = null }) {
+        b == null -> GlassPage(title = "选择上车站", onBack = { backFromRoute() }) {
             item { Hint(r.fullName()) }
             glassGroup(r.boardingStops().filter { r.alightingStops(it).isNotEmpty() }, key = "board") { st ->
                 GlassRow(headline = st, onClick = {
@@ -582,7 +588,7 @@ fun RouteChooser(mode: Candidate.Type, onBack: () -> Unit, onPicked: (Candidate)
                 })
             }
         }
-        else -> GlassPage(title = "选择下车站", onBack = { board = null }) {
+        else -> GlassPage(title = "选择下车站", onBack = { backFromBoard() }) {
             item { Hint("${r.fullName()} · ${b} 上车") }
             glassGroup(r.alightingStops(b), key = "alight") { st ->
                 GlassRow(headline = st, onClick = { onPicked(r.toCandidate(b, st)) })

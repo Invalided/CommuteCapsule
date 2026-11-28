@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.platform.LocalContext
 import com.busnotice.commute.Candidate
 import com.busnotice.commute.Leg
+import com.busnotice.commute.RouteDef
 import com.busnotice.commute.Trip
 
 sealed interface Screen {
@@ -29,7 +30,10 @@ sealed interface Screen {
     data class PickBus(val legIndex: Int) : Screen
     data class PickMetro(val legIndex: Int) : Screen
     data class EditShuttle(val legIndex: Int, val candidateIndex: Int) : Screen
-    data class PickRoute(val legIndex: Int, val mode: Candidate.Type, val back: Screen) : Screen
+    data class PickRoute(
+        val legIndex: Int, val mode: Candidate.Type, val back: Screen,
+        val route: RouteDef? = null, val board: String? = null,
+    ) : Screen
     data object Settings : Screen
     data object Checks : Screen
     data object Routes : Screen
@@ -124,14 +128,16 @@ fun App(resumeTick: Int) {
                     onBack = { screen = Screen.Edit },
                     onPicked = { addCandidate(s.legIndex, it) },
                     onFromRoutes = if (hasRoutesFor(ctx, Candidate.Type.BUS)) ({ screen = Screen.PickRoute(s.legIndex, Candidate.Type.BUS, s) }) else null,
+                    onRouteHit = { r, st -> screen = Screen.PickRoute(s.legIndex, Candidate.Type.BUS, s, r, st) },
                 )
                 is Screen.PickMetro -> MetroPicker(
                     onBack = { screen = Screen.Edit },
                     onPicked = { addCandidate(s.legIndex, it) },
                     onFromRoutes = if (hasRoutesFor(ctx, Candidate.Type.METRO)) ({ screen = Screen.PickRoute(s.legIndex, Candidate.Type.METRO, s) }) else null,
+                    onRouteHit = { r, st -> screen = Screen.PickRoute(s.legIndex, Candidate.Type.METRO, s, r, st) },
                 )
                 is Screen.PickRoute -> RouteChooser(
-                    mode = s.mode,
+                    mode = s.mode, initialRoute = s.route, initialBoard = s.board,
                     onBack = { screen = s.back },
                     onPicked = { addCandidate(s.legIndex, it, if (s.back is Screen.EditShuttle) s.back.candidateIndex else -1) },
                 )

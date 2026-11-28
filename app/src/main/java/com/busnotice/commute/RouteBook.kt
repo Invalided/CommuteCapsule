@@ -312,6 +312,33 @@ object RouteMerge {
     }
 }
 
+/**
+ * 在「我的线路」中按关键字查找，供线路与站点选择器的搜索结果使用（不依赖系统接口，便于单元测试）。
+ *
+ * 线路名命中时给出整条线路（[Hit.stop] 为空）；站名命中时给出该线路及可上车的站点。
+ * 比对忽略空白与大小写，站名忽略末尾的「站」，线路名忽略末尾的「路」。
+ */
+object RouteSearch {
+    data class Hit(val route: RouteDef, val stop: String?)
+
+    private fun norm(s: String) = s.filterNot { it.isWhitespace() }.lowercase()
+    private fun lineKey(s: String) = norm(s).let { if (it.length > 1 && it.endsWith("路")) it.dropLast(1) else it }
+    private fun stopKey(s: String) = norm(ManualEntry.stationKey(s))
+
+    fun search(routes: List<RouteDef>, mode: Candidate.Type, key: String, max: Int = 12): List<Hit> {
+        val k = norm(key)
+        if (k.isEmpty()) return emptyList()
+        val lk = lineKey(key)
+        val sk = stopKey(key)
+        val pool = routes.filter { it.mode == mode }
+        val byName = pool.filter { r -> lineKey(r.name).contains(lk) || norm(r.fullName()).contains(k) }.map { Hit(it, null) }
+        val byStop = if (sk.isEmpty()) emptyList() else pool.flatMap { r ->
+            r.boardingStops().filter { st -> stopKey(st).contains(sk) && r.alightingStops(st).isNotEmpty() }.map { Hit(r, it) }
+        }
+        return (byName + byStop).take(max)
+    }
+}
+
 object RouteStore {
     private const val PREFS = "routes"
     private const val KEY = "list"
