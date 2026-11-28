@@ -72,8 +72,8 @@ private data class RouteDraft(
     fun isBlank() = raw.isBlank() && endA.isBlank() && endB.isBlank() && firstMin < 0 && lastMin < 0 && peak == 0 && offPeak == 0 && departures.isEmpty()
 
     fun build(): List<RouteDef> {
-        val sch = if (mode == Candidate.Type.SHUTTLE) RouteSchedule(departures = departures)
-            else RouteSchedule(firstMin, lastMin, peak, offPeak)
+        val sch = if (mode == Candidate.Type.SHUTTLE) RouteSchedule(peakHeadwayMin = peak, offPeakHeadwayMin = peak, departures = departures)
+            else RouteSchedule(firstMin, lastMin, peak, offPeak, departures)
         val r = RouteDef(name = effectiveName(), direction = if (reverse) "去程" else "", mode = mode,
             stopPattern = if (ends) RouteDef.StopPattern.ENDS else RouteDef.StopPattern.ALL, stops = stops(), schedule = sch)
         return if (reverse) listOf(r, r.reversed()) else listOf(r)
@@ -162,6 +162,7 @@ private fun scheduleText(r: RouteDef): String {
     val s = r.schedule
     return when {
         s.departures.isNotEmpty() -> "固定发车 ${s.departures.size} 班"
+        s.peakHeadwayMin > 0 && r.mode == Candidate.Type.SHUTTLE -> "每 ${s.peakHeadwayMin} 分钟一班"
         s.peakHeadwayMin > 0 -> "高峰每 ${s.peakHeadwayMin} 分钟一班"
         RouteTiming.peak(r) > 0 -> "发车间隔按默认值估算"
         else -> "时刻依据乘车记录学习"
@@ -286,16 +287,10 @@ private fun RouteNewPage(d: RouteDraft, onChange: (RouteDraft) -> Unit, onBack: 
         item {
             GlassCard {
                 Text("时刻（选填）", fontWeight = FontWeight.SemiBold)
-                if (d.mode == Candidate.Type.SHUTTLE) {
-                    Text("发车时刻", fontSize = 14.sp, color = Fuse.dim(dark), modifier = Modifier.padding(top = 10.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.padding(top = 6.dp)) {
-                        d.departures.forEach { m ->
-                            GlassChip(true, { onChange(d.copy(departures = d.departures - m)) }, RouteText.hhmm(m) + " ×")
-                        }
-                        GlassChip(false, { pick = PickKind.DEPARTURE }, "添加时刻")
-                    }
-                    Hint("填写始发站的发车时刻，点击已添加的时刻可将其移除。未填写时仅依据乘车记录学习。")
+                val shuttle = d.mode == Candidate.Type.SHUTTLE
+                if (shuttle) {
+                    PickBox("发车间隔", d.peak.takeIf { it > 0 }?.let { "$it 分钟" }, "未设置", { pick = PickKind.PEAK },
+                        { onChange(d.copy(peak = 0)) }, Modifier.fillMaxWidth().padding(top = 10.dp))
                 } else {
                     Row(Modifier.padding(top = 10.dp)) {
                         PickBox("首班", d.firstMin.takeIf { it >= 0 }?.let(RouteText::hhmm), "--:--", { pick = PickKind.FIRST },
@@ -309,8 +304,17 @@ private fun RouteNewPage(d: RouteDraft, onChange: (RouteDraft) -> Unit, onBack: 
                         PickBox("平峰间隔", d.offPeak.takeIf { it > 0 }?.let { "$it 分钟" }, "默认 ${(RouteTiming.defaultPeak(d.mode) * 3 + 1) / 2} 分钟", { pick = PickKind.OFF_PEAK },
                             { onChange(d.copy(offPeak = 0)) }, Modifier.weight(1f).padding(start = 6.dp))
                     }
-                                        Hint("未设置时按默认值估算，已设置的以设置值为准。")
                 }
+                Text("固定发车时刻", fontSize = 13.sp, color = Fuse.dim(dark), modifier = Modifier.padding(top = 12.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(top = 6.dp)) {
+                    d.departures.forEach { m ->
+                        GlassChip(true, { onChange(d.copy(departures = d.departures - m)) }, RouteText.hhmm(m) + " ×")
+                    }
+                    GlassChip(false, { pick = PickKind.DEPARTURE }, "添加时刻")
+                }
+                Hint(if (shuttle) "填写始发站的发车时刻或发车间隔；两者均填写时以固定发车时刻为准。均未填写时仅依据乘车记录学习。"
+                    else "未设置时按默认值估算；填写固定发车时刻后以固定时刻为准。反向线路不沿用固定发车时刻。")
             }
         }
         item {
@@ -346,9 +350,9 @@ private fun RouteNewPage(d: RouteDraft, onChange: (RouteDraft) -> Unit, onBack: 
             },
         )
         PickKind.PEAK, PickKind.OFF_PEAK -> {
-            val def = RouteTiming.defaultPeak(d.mode).coerceAtLeast(1)
+            val def = RouteTiming.defaultPeak(d.mode).takeIf { it > 0 } ?: 15
             NumberWheelSheet(
-                title = if (k == PickKind.PEAK) "高峰间隔" else "平峰间隔",
+                title = if (d.mode == Candidate.Type.SHUTTLE) "发车间隔" else if (k == PickKind.PEAK) "高峰间隔" else "平峰间隔",
                 initial = if (k == PickKind.PEAK) d.peak.takeIf { it > 0 } ?: def else d.offPeak.takeIf { it > 0 } ?: ((def * 3 + 1) / 2),
                 range = 1..60, unit = "分钟",
                 onDismiss = { pick = null },

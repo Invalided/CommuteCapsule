@@ -119,4 +119,19 @@ class RouteBookTest {
         assertEquals(listOf(425, 460), RouteText.parseTimes("7:40, 07:05"))
         assertEquals(null, RouteText.parseTimes("7:05 25:00"))
     }
+
+    @Test fun shuttleHeadwayWithoutDeparturesProducesSchedule() {
+        val r = base.copy(mode = Candidate.Type.SHUTTLE, schedule = RouteSchedule(peakHeadwayMin = 20, offPeakHeadwayMin = 20))
+        val next = RouteTiming.next(r, nowSec = 7 * 3600, weekday = true, n = 2)
+        assertEquals(2, next.size)
+        assertEquals(20 * 60, next[1] - next[0])
+    }
+
+    @Test fun busFixedDeparturesSurviveFileRoundTrip() {
+        val r = base.copy(schedule = RouteSchedule(firstMin = 360, lastMin = 1320, peakHeadwayMin = 8, departures = listOf(430, 460)))
+        val back = RouteFile.read(RouteFile.write(listOf(r))).single()
+        assertEquals(listOf(430, 460), back.schedule.departures)
+        assertEquals(8, back.schedule.peakHeadwayMin)
+        assertEquals(listOf(430 * 60 - 7 * 3600), RouteTiming.next(back, nowSec = 7 * 3600, weekday = true, n = 1))
+    }
 }
