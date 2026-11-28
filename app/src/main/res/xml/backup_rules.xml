@@ -5,6 +5,7 @@
 -->
 <full-backup-content>
     <include domain="sharedpref" path="trips.xml" />
+    <include domain="sharedpref" path="routes.xml" />
     <include domain="sharedpref" path="transit.xml" />
     <include domain="sharedpref" path="places.xml" />
     <include domain="sharedpref" path="learn.xml" />

@@ -19,6 +19,7 @@ fun SettingsScreen(
     onChecks: (() -> Unit)? = null,
     onOnboarding: (() -> Unit)? = null,
     onImport: (() -> Unit)? = null,
+    onRoutes: (() -> Unit)? = null,
 ) {
     val ctx = LocalContext.current
     val dark = isSystemInDarkTheme()
@@ -42,6 +43,9 @@ fun SettingsScreen(
                 },
                 onClick = { sourceOpen = true },
             )
+        }
+        if (onRoutes != null) item {
+            GlassRow(headline = "我的线路", supporting = "按站名新建线路、生成反向，导入或导出线路文件", onClick = onRoutes)
         }
         if (onChecks != null || onOnboarding != null) sectionHeader("权限与引导")
         if (onChecks != null) item {

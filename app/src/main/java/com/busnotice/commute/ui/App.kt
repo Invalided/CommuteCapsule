@@ -31,6 +31,7 @@ sealed interface Screen {
     data class EditShuttle(val legIndex: Int, val candidateIndex: Int) : Screen
     data object Settings : Screen
     data object Checks : Screen
+    data object Routes : Screen
 }
 
 @Composable
@@ -83,6 +84,7 @@ fun App(resumeTick: Int) {
             Screen.Edit -> leaveEditor()
             Screen.Settings -> screen = Screen.Home
             Screen.Checks -> screen = Screen.Settings
+            Screen.Routes -> screen = Screen.Settings
             else -> screen = Screen.Edit
         }
     }
@@ -100,12 +102,14 @@ fun App(resumeTick: Int) {
                 Screen.Settings -> SettingsScreen(
                     onBack = { screen = Screen.Home },
                     onChecks = { screen = Screen.Checks },
+                    onRoutes = { screen = Screen.Routes },
                     onOnboarding = {
                         OnboardingState.replay(ctx); coachStep = OnboardingState.step(ctx); coachOn = true; screen = Screen.Home
                     },
                     onImport = { openImport(false) },
                 )
                 Screen.Checks -> SetupScreen(resumeTick) { screen = Screen.Settings }
+                Screen.Routes -> RouteBookScreen { screen = Screen.Settings }
                 Screen.Edit -> TripEditor(
                     trip = draft,
                     onChange = { draft = it },
