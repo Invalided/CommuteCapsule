@@ -188,6 +188,7 @@ private fun RouteListPage(ver: Int, onBack: () -> Unit, onNew: () -> Unit, onFil
                 supporting = listOfNotNull(
                     MODE_LABELS.first { it.first == r.mode }.second, "${r.stops.size} 个站点",
                     "只停起终点".takeIf { r.stopPattern == RouteDef.StopPattern.ENDS }, scheduleText(r),
+                    "来自行程".takeIf { r.fromTrip },
                 ).joinToString(" · "),
                 onClick = { opened = r },
             )

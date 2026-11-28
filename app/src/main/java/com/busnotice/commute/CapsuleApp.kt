@@ -14,6 +14,7 @@ class CapsuleApp : Application() {
             runCatching { TraceStore.compactAll(this) }
             runCatching { TraceStore.refreshLocked(this) }
             runCatching { MigrationStore.expireUndo(this) }
+            runCatching { RouteLink.backfillOnce(this) }
         }, "local-crypto").start()
     }
 }

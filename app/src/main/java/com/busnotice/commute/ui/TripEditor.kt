@@ -57,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.busnotice.commute.Candidate
+import com.busnotice.commute.RouteLink
 import com.busnotice.commute.Leg
 import com.busnotice.commute.Scheduler
 import com.busnotice.commute.Trip
@@ -217,7 +218,7 @@ fun saveTrip(ctx: android.content.Context, trip: Trip): Boolean {
         Toast.makeText(ctx, "至少添加一条线路", Toast.LENGTH_SHORT).show()
         return false
     }
-    val t = trip.copy(legs = legs)
+    val t = RouteLink.linkForSave(ctx, trip.copy(legs = legs))
     TripStore.upsert(ctx, t); Scheduler.schedule(ctx, t)
     return true
 }

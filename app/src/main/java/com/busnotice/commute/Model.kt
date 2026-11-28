@@ -30,6 +30,8 @@ data class Candidate(
     val alightLng: Double = Double.NaN,
     // 这条线路怎么来的：数据源选中 / 查不到时用户直接记下（lat/lng 为 NaN，位置待学习）
     val origin: Origin = Origin.SOURCE,
+    // 关联的「我的线路」编号；空表示未关联。线路被删除后保留原编号，不再自动重建
+    val routeId: String = "",
 ) {
     enum class Type { BUS, SHUTTLE, METRO }
     enum class Origin { SOURCE, MANUAL }
@@ -64,6 +66,7 @@ data class Candidate(
         .put("offPeakHeadwayMin", offPeakHeadwayMin).put("metroDir", metroDir)
         .apply { if (!alightLat.isNaN() && !alightLng.isNaN()) put("alightLat", alightLat).put("alightLng", alightLng) }
         .apply { if (origin != Origin.SOURCE) put("origin", origin.name) }
+        .apply { if (routeId.isNotEmpty()) put("routeId", routeId) }
 
     companion object {
         private val METRO_RE = Regex("^(地铁)?\\s*\\d+\\s*号线|地铁|机场线|城际")
@@ -92,6 +95,7 @@ data class Candidate(
                 offPeakHeadwayMin = o.optInt("offPeakHeadwayMin"), metroDir = o.optString("metroDir"),
                 alightLat = o.optDouble("alightLat"), alightLng = o.optDouble("alightLng"),
                 origin = runCatching { Origin.valueOf(o.optString("origin")) }.getOrDefault(Origin.SOURCE),
+                routeId = o.optString("routeId"),
             )
         }
     }

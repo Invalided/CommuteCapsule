@@ -17,6 +17,7 @@ data class RouteDef(
     val stopPattern: StopPattern = StopPattern.ALL,
     val stops: List<String> = emptyList(),
     val schedule: RouteSchedule = RouteSchedule(),
+    val fromTrip: Boolean = false,       // 由行程自动生成，用户可在「我的线路」中补充站点与时刻
 ) {
     enum class StopPattern { ALL, ENDS }
 
@@ -49,6 +50,7 @@ data class RouteDef(
     fun toCandidate(board: String, alight: String): Candidate {
         val s = schedule
         val c = Candidate(
+            routeId = id,
             type = mode, name = name, stopName = board, lat = Double.NaN, lng = Double.NaN,
             alightName = alight, departures = s.departures,
             headwayMin = s.peakHeadwayMin, offPeakHeadwayMin = s.offPeakHeadwayMin,
@@ -61,6 +63,7 @@ data class RouteDef(
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("direction", direction).put("mode", mode.name)
         .put("stopPattern", stopPattern.name).put("stops", JSONArray(stops)).put("schedule", schedule.toJson())
+        .apply { if (fromTrip) put("fromTrip", true) }
 
     companion object {
         fun fromJson(o: JSONObject): RouteDef {
@@ -72,6 +75,7 @@ data class RouteDef(
                 stopPattern = runCatching { StopPattern.valueOf(o.optString("stopPattern")) }.getOrDefault(StopPattern.ALL),
                 stops = (0 until arr.length()).map { arr.getString(it) },
                 schedule = o.optJSONObject("schedule")?.let { RouteSchedule.fromJson(it) } ?: RouteSchedule(),
+                fromTrip = o.optBoolean("fromTrip"),
             )
         }
     }
@@ -326,4 +330,81 @@ object RouteStore {
     fun addAll(ctx: Context, routes: List<RouteDef>) = save(ctx, all(ctx) + routes)
 
     fun delete(ctx: Context, id: String) = save(ctx, all(ctx).filter { it.id != id })
+}
+
+/**
+ * 行程与线路的关联：保存行程时，未关联的乘车段先匹配已有线路（同一交通方式、同名，且依次包含上车站与下车站），
+ * 匹配不到则生成一条只含上车站与下车站的线路。不合并、不修改已有线路；已关联（包括线路已删除）的乘车段不再处理。
+ * 学习数据仍按行程保存，本步骤不改变提醒与预测。
+ */
+object RouteLink {
+    private const val PREFS = "routes"
+    private const val KEY_BACKFILL = "backfill_v1"
+
+    private fun lineKey(mode: Candidate.Type, name: String) =
+        mode.name + "|" + (if (mode == Candidate.Type.BUS) ManualEntry.lineName(name) else name.trim())
+
+    private fun stopKey(name: String) = ManualEntry.stationKey(name)
+
+    /** 已有线路是否覆盖这段乘车 */
+    fun matches(r: RouteDef, c: Candidate): Boolean {
+        if (lineKey(r.mode, r.name) != lineKey(c.type, c.name)) return false
+        val keys = r.stops.map(::stopKey)
+        val b = keys.indexOf(stopKey(c.stopName))
+        if (b < 0) return false
+        return c.alightName.isBlank() || keys.drop(b + 1).contains(stopKey(c.alightName))
+    }
+
+    /** 由乘车段生成线路；没有下车站时无法构成线路，返回 null */
+    fun routeFrom(c: Candidate): RouteDef? {
+        if (c.stopName.isBlank() || c.alightName.isBlank() || stopKey(c.stopName) == stopKey(c.alightName)) return null
+        val name = when {
+            c.type != Candidate.Type.BUS -> c.name.trim()
+            c.name.endsWith("路") || c.name.endsWith("线") -> c.name.trim()
+            else -> c.name.trim() + "路"
+        }
+        if (name.isEmpty()) return null
+        val schedule = when (c.type) {
+            Candidate.Type.SHUTTLE -> RouteSchedule(departures = c.departures.sorted())
+            else -> RouteSchedule(peakHeadwayMin = c.headwayMin.coerceAtLeast(0), offPeakHeadwayMin = c.offPeakHeadwayMin.coerceAtLeast(0))
+        }
+        return RouteDef(name = name, mode = c.type, stops = listOf(c.stopName.trim(), c.alightName.trim()),
+            schedule = schedule, fromTrip = true)
+    }
+
+    /** 为行程中未关联的乘车段建立关联；返回更新后的行程与新生成的线路 */
+    fun link(trip: Trip, routes: List<RouteDef>): Pair<Trip, List<RouteDef>> {
+        val known = routes.toMutableList()
+        val created = mutableListOf<RouteDef>()
+        val legs = trip.legs.map { leg ->
+            leg.copy(candidates = leg.candidates.map { c ->
+                if (c.routeId.isNotEmpty()) return@map c
+                val hit = known.firstOrNull { matches(it, c) } ?: routeFrom(c)?.also { known += it; created += it }
+                if (hit == null) c else c.copy(routeId = hit.id)
+            })
+        }
+        return trip.copy(legs = legs) to created
+    }
+
+    /** 保存行程前调用；演示模式下不生成线路 */
+    fun linkForSave(ctx: Context, trip: Trip): Trip {
+        if (Transit.mode == Transit.DataMode.DEMO) return trip
+        val (t, created) = link(trip, RouteStore.all(ctx))
+        if (created.isNotEmpty()) RouteStore.addAll(ctx, created)
+        return t
+    }
+
+    /** 升级后为已有行程补生成线路，仅执行一次；演示模式下推迟到切换为边用边学后 */
+    fun backfillOnce(ctx: Context) {
+        val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (sp.getBoolean(KEY_BACKFILL, false) || Transit.mode == Transit.DataMode.DEMO) return
+        var routes = RouteStore.all(ctx)
+        val created = mutableListOf<RouteDef>()
+        val trips = TripStore.all(ctx).map { t ->
+            val (nt, c) = link(t, routes); routes = routes + c; created += c; nt
+        }
+        if (created.isNotEmpty()) RouteStore.addAll(ctx, created)
+        TripStore.save(ctx, trips)
+        sp.edit().putBoolean(KEY_BACKFILL, true).apply()
+    }
 }

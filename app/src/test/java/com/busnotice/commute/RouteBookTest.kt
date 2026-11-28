@@ -151,4 +151,45 @@ class RouteBookTest {
         assertEquals(8, c.headwayMin)
         assertTrue(c.lat.isNaN())
     }
+
+    private fun ride(line: String, board: String, alight: String, type: Candidate.Type = Candidate.Type.BUS) =
+        Candidate(type = type, name = line, stopName = board, lat = Double.NaN, lng = Double.NaN, alightName = alight,
+            origin = Candidate.Origin.MANUAL)
+
+    @Test fun linkReusesRouteThatCoversTheRide() {
+        val r = base.copy(name = "105路")
+        val (t, created) = RouteLink.link(Trip(legs = listOf(Leg(listOf(ride("105", "甲站", "终点站"))))), listOf(r))
+        assertTrue(created.isEmpty())
+        assertEquals(r.id, t.legs[0].candidates[0].routeId)
+    }
+
+    @Test fun linkCreatesTwoStopRouteAndSharesItAcrossLegs() {
+        val trip = Trip(legs = listOf(Leg(listOf(ride("7", "东站", "西站"))), Leg(listOf(ride("7路", "东站", "西站")))))
+        val (t, created) = RouteLink.link(trip, emptyList())
+        assertEquals(1, created.size)
+        assertEquals("7路", created[0].name)
+        assertEquals(listOf("东站", "西站"), created[0].stops)
+        assertTrue(created[0].fromTrip)
+        assertEquals(created[0].id, t.legs[1].candidates[0].routeId)
+    }
+
+    @Test fun linkSkipsRidesWithoutAlightingStopOrAlreadyLinked() {
+        val trip = Trip(legs = listOf(Leg(listOf(ride("7", "东站", ""), ride("8", "东站", "西站").copy(routeId = "gone")))))
+        val (t, created) = RouteLink.link(trip, emptyList())
+        assertTrue(created.isEmpty())
+        assertEquals("", t.legs[0].candidates[0].routeId)
+        assertEquals("gone", t.legs[0].candidates[1].routeId)
+    }
+
+    @Test fun linkDoesNotMatchWrongDirectionOrMode() {
+        val (_, created) = RouteLink.link(Trip(legs = listOf(Leg(listOf(ride("示例线", "终点站", "甲站"))))), listOf(base))
+        assertEquals(1, created.size)
+    }
+
+    @Test fun routeIdAndFromTripSurviveJson() {
+        val c = ride("7", "东站", "西站").copy(routeId = "r1")
+        assertEquals("r1", Candidate.fromJson(c.toJson()).routeId)
+        assertTrue(RouteDef.fromJson(base.copy(fromTrip = true).toJson()).fromTrip)
+        assertFalse(RouteDef.fromJson(base.toJson()).fromTrip)
+    }
 }
