@@ -387,15 +387,22 @@ object RouteLink {
     }
 
     /** 保存行程前调用；演示模式下不生成线路 */
-    fun linkForSave(ctx: Context, trip: Trip): Trip {
-        if (Transit.mode == Transit.DataMode.DEMO) return trip
-        val (t, created) = link(trip, RouteStore.all(ctx))
-        if (created.isNotEmpty()) RouteStore.addAll(ctx, created)
-        return t
+    /** 保存行程与升级补生成共用的锁，避免两者同时读写行程与线路 */
+    val lock = Any()
+
+    /** 关联线路并保存行程（含新生成的线路），在 [lock] 内完成 */
+    fun linkAndSave(ctx: Context, trip: Trip): Trip = synchronized(lock) {
+        val t = if (Transit.mode == Transit.DataMode.DEMO) trip else {
+            val (nt, created) = link(trip, RouteStore.all(ctx))
+            if (created.isNotEmpty()) RouteStore.addAll(ctx, created)
+            nt
+        }
+        TripStore.upsert(ctx, t)
+        t
     }
 
     /** 升级后为已有行程补生成线路，仅执行一次；演示模式下推迟到切换为边用边学后 */
-    fun backfillOnce(ctx: Context) {
+    fun backfillOnce(ctx: Context) = synchronized(lock) {
         val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (sp.getBoolean(KEY_BACKFILL, false) || Transit.mode == Transit.DataMode.DEMO) return
         var routes = RouteStore.all(ctx)

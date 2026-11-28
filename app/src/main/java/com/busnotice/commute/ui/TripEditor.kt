@@ -218,8 +218,8 @@ fun saveTrip(ctx: android.content.Context, trip: Trip): Boolean {
         Toast.makeText(ctx, "至少添加一条线路", Toast.LENGTH_SHORT).show()
         return false
     }
-    val t = RouteLink.linkForSave(ctx, trip.copy(legs = legs))
-    TripStore.upsert(ctx, t); Scheduler.schedule(ctx, t)
+    val t = RouteLink.linkAndSave(ctx, trip.copy(legs = legs))
+    Scheduler.schedule(ctx, t)
     return true
 }
 

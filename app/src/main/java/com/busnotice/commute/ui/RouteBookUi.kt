@@ -164,8 +164,7 @@ private fun scheduleText(r: RouteDef): String {
         s.departures.isNotEmpty() -> "固定发车 ${s.departures.size} 班"
         s.peakHeadwayMin > 0 && r.mode == Candidate.Type.SHUTTLE -> "每 ${s.peakHeadwayMin} 分钟一班"
         s.peakHeadwayMin > 0 -> "高峰每 ${s.peakHeadwayMin} 分钟一班"
-        RouteTiming.peak(r) > 0 -> "发车间隔按默认值估算"
-        else -> "时刻依据乘车记录学习"
+        else -> "未填写时刻信息"
     }
 }
 
@@ -300,9 +299,9 @@ private fun RouteNewPage(d: RouteDraft, onChange: (RouteDraft) -> Unit, onBack: 
                             { onChange(d.copy(lastMin = -1)) }, Modifier.weight(1f).padding(start = 6.dp))
                     }
                     Row(Modifier.padding(top = 12.dp)) {
-                        PickBox("高峰间隔", d.peak.takeIf { it > 0 }?.let { "$it 分钟" }, "默认 ${RouteTiming.defaultPeak(d.mode)} 分钟", { pick = PickKind.PEAK },
+                        PickBox("高峰间隔", d.peak.takeIf { it > 0 }?.let { "$it 分钟" }, "未设置", { pick = PickKind.PEAK },
                             { onChange(d.copy(peak = 0)) }, Modifier.weight(1f).padding(end = 6.dp))
-                        PickBox("平峰间隔", d.offPeak.takeIf { it > 0 }?.let { "$it 分钟" }, "默认 ${(RouteTiming.defaultPeak(d.mode) * 3 + 1) / 2} 分钟", { pick = PickKind.OFF_PEAK },
+                        PickBox("平峰间隔", d.offPeak.takeIf { it > 0 }?.let { "$it 分钟" }, "未设置", { pick = PickKind.OFF_PEAK },
                             { onChange(d.copy(offPeak = 0)) }, Modifier.weight(1f).padding(start = 6.dp))
                     }
                 }
@@ -314,8 +313,8 @@ private fun RouteNewPage(d: RouteDraft, onChange: (RouteDraft) -> Unit, onBack: 
                     }
                     GlassChip(false, { pick = PickKind.DEPARTURE }, "添加时刻")
                 }
-                Hint(if (shuttle) "填写始发站的发车时刻或发车间隔；两者均填写时以固定发车时刻为准。均未填写时仅依据乘车记录学习。"
-                    else "未设置时按默认值估算；填写固定发车时刻后以固定时刻为准。反向线路不沿用固定发车时刻。")
+                Hint(if (shuttle) "可填写始发站的发车时刻或发车间隔。当前版本仅保存时刻信息，提醒仍依据乘车记录学习。"
+                    else "地铁的发车间隔在无实时数据时用于估算候车时间，其余时刻信息当前版本仅保存。反向线路不沿用固定发车时刻。")
             }
         }
         item {
