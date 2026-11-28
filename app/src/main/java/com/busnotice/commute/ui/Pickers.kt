@@ -68,7 +68,7 @@ import kotlinx.coroutines.withContext
 /** 公交加「路」，地铁线（数据源里也能查到）标出「地铁」 */
 fun lineText(name: String) = when {
     Candidate.looksLikeMetro(name) -> "$name · 地铁"
-    name.endsWith("线") -> name
+    name.endsWith("线") || name.startsWith("线路") -> name
     else -> "${name}路"
 }
 
@@ -134,6 +134,16 @@ private fun OrderDot(n: Int) {
 }
 
 private fun distText(m: Int) = if (m >= 1000) "%.1f 公里".format(m / 1000.0) else "$m 米"
+
+/** 列表顶部：从「我的线路」中选择（没有该方式的线路时不显示） */
+private fun LazyListScope.routeEntry(onClick: (() -> Unit)?) {
+    if (onClick == null) return
+    item(key = "route-entry") {
+        GlassCard {
+            GlassRow(headline = "从我的线路选择", supporting = "选择线路后指定上车站与下车站", onClick = onClick)
+        }
+    }
+}
 
 /** 搜索结果末尾：「找不到？直接记下」 */
 private fun LazyListScope.manualEntryRow(query: String, emphasize: Boolean, what: String, onClick: () -> Unit) = item(key = "manual-entry") {
@@ -210,7 +220,7 @@ private sealed interface BusStage {
 
 /** 选公交：搜线路/站点，或从附近站点进入 → 选上车站 → 选下车站（可跳过） */
 @Composable
-fun BusPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
+fun BusPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes: (() -> Unit)? = null) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     // 没有可查询的数据源：直接进入「直接记下」
@@ -273,6 +283,7 @@ fun BusPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
             var stop by remember(s) { mutableStateOf(s.stop) }
             var alight by remember(s) { mutableStateOf("") }
             PickerScaffold("直接记下公交", { if (searchable) stage = BusStage.Search else onBack() }) {
+            routeEntry(onFromRoutes)
                 item {
                     GlassCard {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -294,6 +305,7 @@ fun BusPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
         }
 
         BusStage.Search -> PickerScaffold("添加公交", onBack) {
+            routeEntry(onFromRoutes)
             item { SearchField(query, "搜线路号或站名") { query = it } }
             if (busy) loading()
             if (query.isBlank()) {
@@ -446,7 +458,7 @@ fun BusPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
 
 /** 地铁没有实时数据：选站 + 填线路名、发车间隔和下车站；查不到的站可以直接记下 */
 @Composable
-fun MetroPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
+fun MetroPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit, onFromRoutes: (() -> Unit)? = null) {
     val ctx = LocalContext.current
     val searchable = remember { StopSearch.available() }
     var query by remember { mutableStateOf("") }
@@ -488,6 +500,7 @@ fun MetroPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
     val c = chosen
     if (manual) {
         PickerScaffold("直接记下地铁", { if (searchable) manual = false else onBack() }) {
+            routeEntry(onFromRoutes)
             item {
                 GlassCard {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -508,6 +521,7 @@ fun MetroPicker(onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
         }
     } else if (c == null) {
         PickerScaffold("添加地铁", onBack) {
+            routeEntry(onFromRoutes)
             item { SearchField(query, "搜地铁站名") { query = it } }
             val r = result
             when {
@@ -587,7 +601,7 @@ private val TIME_RE = Regex("(\\d{1,2})\\s*[:：.]\\s*(\\d{2})")
 
 /** 自定义通勤车：名称、上车点、发车时刻 */
 @Composable
-fun ShuttleEditor(initial: Candidate?, onBack: () -> Unit, onDone: (Candidate) -> Unit) {
+fun ShuttleEditor(initial: Candidate?, onBack: () -> Unit, onDone: (Candidate) -> Unit, onFromRoutes: (() -> Unit)? = null) {
     val ctx = LocalContext.current
     var name by remember { mutableStateOf(initial?.name ?: "通勤车") }
     var stopName by remember { mutableStateOf(initial?.stopName ?: "") }
@@ -625,6 +639,7 @@ fun ShuttleEditor(initial: Candidate?, onBack: () -> Unit, onDone: (Candidate) -
         )
     }
     PickerScaffold(if (initial == null) "添加通勤车" else "编辑通勤车", onBack) {
+            routeEntry(onFromRoutes)
         item {
             GlassCard {
               Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

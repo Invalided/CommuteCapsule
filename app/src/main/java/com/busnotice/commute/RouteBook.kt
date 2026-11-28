@@ -38,15 +38,24 @@ data class RouteDef(
      * 转为行程中的一个乘车选项（直接记下、位置待学习）。
      * 填写了时刻表或间隔就带上，未填写则沿用原有默认推算。
      */
+    /** 可下车的站点：上车站之后的站点；只停起终点时仅终点站 */
+    fun alightingStops(board: String): List<String> {
+        val i = stops.indexOf(board)
+        if (i < 0) return emptyList()
+        return if (stopPattern == StopPattern.ENDS) listOfNotNull(stops.lastOrNull().takeIf { i < stops.lastIndex })
+            else stops.drop(i + 1)
+    }
+
     fun toCandidate(board: String, alight: String): Candidate {
         val s = schedule
-        return Candidate(
+        val c = Candidate(
             type = mode, name = name, stopName = board, lat = Double.NaN, lng = Double.NaN,
             alightName = alight, departures = s.departures,
             headwayMin = s.peakHeadwayMin, offPeakHeadwayMin = s.offPeakHeadwayMin,
             metroDir = if (mode == Candidate.Type.METRO) stops.lastOrNull().orEmpty() else "",
             origin = Candidate.Origin.MANUAL,
         )
+        return if (mode == Candidate.Type.BUS) Candidate.normalize(c.copy(name = ManualEntry.lineName(name))) else c
     }
 
     fun toJson(): JSONObject = JSONObject()

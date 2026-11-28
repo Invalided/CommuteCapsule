@@ -547,3 +547,51 @@ private fun RouteFilesPage(onBack: () -> Unit, onImported: () -> Unit) {
         item { Hint("线路文件仅在本机读取，不会上传。文件格式有误时将提示出错行号，已有线路不受影响。") }
     }
 }
+
+/** 是否有可用于该交通方式的线路（决定选择器中是否显示「从我的线路选择」） */
+fun hasRoutesFor(ctx: android.content.Context, mode: Candidate.Type): Boolean = RouteStore.all(ctx).any { it.mode == mode }
+
+/**
+ * 从「我的线路」生成乘车候选：选线路 → 选上车站 → 选下车站（可不设置）。
+ * 生成的候选与「直接记下」相同（无坐标，位置在乘车过程中学习），不改变提醒与预测逻辑。
+ */
+@Composable
+fun RouteChooser(mode: Candidate.Type, onBack: () -> Unit, onPicked: (Candidate) -> Unit) {
+    val ctx = LocalContext.current
+    val routes = remember { RouteStore.all(ctx).filter { it.mode == mode } }
+    var route by remember { mutableStateOf<RouteDef?>(null) }
+    var board by remember { mutableStateOf<String?>(null) }
+    val r = route; val b = board
+    BackHandler { if (b != null) board = null else if (r != null) route = null else onBack() }
+    when {
+        r == null -> GlassPage(title = "选择线路", onBack = onBack) {
+            if (routes.isEmpty()) item { Hint("暂无该交通方式的线路，可在「设置 → 我的线路」中新建。") }
+            glassGroup(routes, key = "choose") { x ->
+                GlassRow(headline = x.fullName(), supporting = "${x.stops.first()} → ${x.stops.last()} · ${x.stops.size} 个站点",
+                    onClick = { route = x })
+            }
+        }
+        b == null -> GlassPage(title = "选择上车站", onBack = { route = null }) {
+            item { Hint(r.fullName()) }
+            glassGroup(r.boardingStops().filter { r.alightingStops(it).isNotEmpty() }, key = "board") { st ->
+                GlassRow(headline = st, onClick = {
+                    // 只停起终点时下车站唯一，直接完成
+                    val alights = r.alightingStops(st)
+                    if (r.stopPattern == RouteDef.StopPattern.ENDS && alights.size == 1) onPicked(r.toCandidate(st, alights.first()))
+                    else board = st
+                })
+            }
+        }
+        else -> GlassPage(title = "选择下车站", onBack = { board = null }) {
+            item { Hint("${r.fullName()} · ${b} 上车") }
+            glassGroup(r.alightingStops(b), key = "alight") { st ->
+                GlassRow(headline = st, onClick = { onPicked(r.toCandidate(b, st)) })
+            }
+            item {
+                PillButton(secondary = true, modifier = Modifier.fillMaxWidth(), onClick = { onPicked(r.toCandidate(b, "")) }) {
+                    Text("暂不设置下车站")
+                }
+            }
+        }
+    }
+}

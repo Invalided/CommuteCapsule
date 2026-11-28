@@ -29,6 +29,7 @@ sealed interface Screen {
     data class PickBus(val legIndex: Int) : Screen
     data class PickMetro(val legIndex: Int) : Screen
     data class EditShuttle(val legIndex: Int, val candidateIndex: Int) : Screen
+    data class PickRoute(val legIndex: Int, val mode: Candidate.Type, val back: Screen) : Screen
     data object Settings : Screen
     data object Checks : Screen
     data object Routes : Screen
@@ -122,15 +123,24 @@ fun App(resumeTick: Int) {
                 is Screen.PickBus -> BusPicker(
                     onBack = { screen = Screen.Edit },
                     onPicked = { addCandidate(s.legIndex, it) },
+                    onFromRoutes = if (hasRoutesFor(ctx, Candidate.Type.BUS)) ({ screen = Screen.PickRoute(s.legIndex, Candidate.Type.BUS, s) }) else null,
                 )
                 is Screen.PickMetro -> MetroPicker(
                     onBack = { screen = Screen.Edit },
                     onPicked = { addCandidate(s.legIndex, it) },
+                    onFromRoutes = if (hasRoutesFor(ctx, Candidate.Type.METRO)) ({ screen = Screen.PickRoute(s.legIndex, Candidate.Type.METRO, s) }) else null,
+                )
+                is Screen.PickRoute -> RouteChooser(
+                    mode = s.mode,
+                    onBack = { screen = s.back },
+                    onPicked = { addCandidate(s.legIndex, it, if (s.back is Screen.EditShuttle) s.back.candidateIndex else -1) },
                 )
                 is Screen.EditShuttle -> ShuttleEditor(
                     initial = draft.legs.getOrNull(s.legIndex)?.candidates?.getOrNull(s.candidateIndex),
                     onBack = { screen = Screen.Edit },
                     onDone = { addCandidate(s.legIndex, it, s.candidateIndex) },
+                    onFromRoutes = if (s.candidateIndex < 0 && hasRoutesFor(ctx, Candidate.Type.SHUTTLE))
+                        ({ screen = Screen.PickRoute(s.legIndex, Candidate.Type.SHUTTLE, s) }) else null,
                 )
             }
             if (coachOn && screen == Screen.Home) {

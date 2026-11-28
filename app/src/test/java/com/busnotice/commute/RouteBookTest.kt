@@ -134,4 +134,21 @@ class RouteBookTest {
         assertEquals(8, back.schedule.peakHeadwayMin)
         assertEquals(listOf(430 * 60 - 7 * 3600), RouteTiming.next(back, nowSec = 7 * 3600, weekday = true, n = 1))
     }
+
+    @Test fun alightingStopsFollowBoardingStop() {
+        assertEquals(listOf("乙站", "终点站"), base.alightingStops("甲站"))
+        assertEquals(emptyList<String>(), base.alightingStops("终点站"))
+        assertEquals(listOf("终点站"), base.copy(stopPattern = RouteDef.StopPattern.ENDS).alightingStops("起点站"))
+    }
+
+    @Test fun candidateFromRouteIsManualWithoutCoordinates() {
+        val r = base.copy(name = "105路", schedule = RouteSchedule(peakHeadwayMin = 8, offPeakHeadwayMin = 12))
+        val c = r.toCandidate("甲站", "终点站")
+        assertEquals(Candidate.Origin.MANUAL, c.origin)
+        assertEquals("105", c.name)
+        assertEquals("甲站", c.stopName)
+        assertEquals("终点站", c.alightName)
+        assertEquals(8, c.headwayMin)
+        assertTrue(c.lat.isNaN())
+    }
 }
