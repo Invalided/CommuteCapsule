@@ -154,8 +154,8 @@ class CommuteService : Service() {
         private const val EXTRA_RESTART = "restart"
         private const val MANUAL_RUN_MS = 30 * 60_000L
         private const val UNDO_MS = 2 * 60_000L
-        /** 用户否决自动判断后，本段暂停按车速判上车的时长 */
-        private const val SPEED_MUTE_MS = 10 * 60_000L
+        /** 用户否决自动判断后，本段按车速判上车须沿本段线路持续的时长 */
+        private const val STRICT_RIDE_MS = 90_000L
         /** 实时显示车已到站后，多长时间内出现车速定位即判上车（毫秒） */
         const val BUS_AT_STOP_BOARD_MS = 8 * 60_000L
         /** 否决基站进站所需的 GPS 精度（米） */
@@ -530,10 +530,25 @@ class CommuteService : Service() {
     )
     private var boardSnap: BoardSnap? = null
     private var boardSnapSource = ""        // 空 = 手点；否则为自动判断来源
-    // 用户否决自动判断后，本段在一段时间内不再按车速判上车
-    private var speedMuteLeg = -1
-    private var speedMuteUntil = 0L
-    private fun speedMuted() = legIdx == speedMuteLeg && System.currentTimeMillis() < speedMuteUntil
+    // 用户否决自动判断后，本段改用更严格的车速判断：须沿本段线路以车速持续 [STRICT_RIDE_MS]，不暂停判断
+    private var strictLeg = -1
+    private var strictFastSince = 0L
+    private fun strict() = legIdx == strictLeg
+
+    /** 严格模式下本次定位是否满足条件；非严格模式恒为 true */
+    private fun strictPass(loc: Location, spd: Float?, trusted: Boolean): Boolean {
+        if (!strict()) return true
+        if (spd == null || !trusted) return false
+        if (spd > 6f && onRoute(loc, trip.legs[legIdx])) {
+            if (strictFastSince == 0L) strictFastSince = loc.time
+            return loc.time - strictFastSince >= STRICT_RIDE_MS
+        }
+        if (spd < 4f || !onRoute(loc, trip.legs[legIdx])) strictFastSince = 0L
+        return false
+    }
+
+    /** 严格模式下上车时刻取持续车速的起点 */
+    private fun strictAt(def: Long) = if (strict() && strictFastSince > 0) strictFastSince else def
 
     /** 差异统计的范围：关联线路时按线路 + 上车站，否则按行程段 */
     private fun mismatchScope(i: Int): String =
@@ -553,7 +568,7 @@ class CommuteService : Service() {
         alertedKey = null; speeds.clear(); routeHits.clear()
         TraceLog.event("board_undo", "leg" to legIdx, "auto" to src.ifEmpty { null })
         if (src.isNotEmpty()) {
-            speedMuteLeg = legIdx; speedMuteUntil = System.currentTimeMillis() + SPEED_MUTE_MS
+            strictLeg = legIdx; strictFastSince = 0L
             val n = RouteLearn.recordMismatch(this, mismatchScope(legIdx), "false_auto", src)
             TraceLog.event("board_mismatch", "leg" to legIdx, "kind" to "false_auto", "src" to src, "n" to n)
             Diag.mark(this, "自动判断的上车被否决，回到第 ${legIdx + 1} 段")
@@ -1903,6 +1918,7 @@ class CommuteService : Service() {
         // 判上车用的速度只信 GPS（精度 ≤30 米、每个定位时刻只算一次）：网络定位常报假速度，出地铁口时尤其多
         val trusted = loc.provider == LocationManager.GPS_PROVIDER && loc.accuracy <= 30f && loc.time != lastSpeedFixT
         if (trusted) lastSpeedFixT = loc.time
+        val strictOk = strictPass(loc, spd, trusted)
         // 中途才打开：还没到过上车点、但速度像坐车且贴着这条线走 → 说明已经在车上了
         if (spd != null && trusted) {
             speeds.addLast(spd); if (speeds.size > 5) speeds.removeFirst()
@@ -1910,10 +1926,10 @@ class CommuteService : Service() {
             val onLine = routeHits.size >= 3 && routeHits.toList().takeLast(3).all { it }
             // 不限于首段或未到达上车点的情况：换乘后（boardedAt 已有值）且未在站旁获得定位的公交段同样适用
             if (!trip.legs[legIdx].isMetroOnly() &&
-                !speedMuted() && (Motion.classify(speeds.toList(), onLine) == Motion.State.RIDE || busRideLikely())) {
+                strictOk && (Motion.classify(speeds.toList(), onLine) == Motion.State.RIDE || busRideLikely())) {
                 TraceLog.event("bus_board", "by" to "gps", "near" to (nearSince > 0), "spd" to speeds.toList().toString(), "onLine" to routeHits.count { it })
                 speeds.clear(); routeHits.clear()
-                onBoarded(manual = false, source = "gps"); return
+                onBoarded(manual = false, at = strictAt(System.currentTimeMillis()), source = "gps"); return
             }
         }
 
@@ -1921,17 +1937,17 @@ class CommuteService : Service() {
 
         // 在站牌旁、实时显示所等的车刚到站，之后第一个可信车速定位即判上车（进程冻结时 GPS 稀疏，凑不齐 3 次快速定位）
         if (nearSince > 0 && busAtStopAt > 0 && loc.time - busAtStopAt in 0..BUS_AT_STOP_BOARD_MS && spd != null && trusted &&
-            spd > 6f && !trip.legs[legIdx].isMetroOnly() && !speedMuted() && onRoute(loc, trip.legs[legIdx])) {
+            spd > 6f && !trip.legs[legIdx].isMetroOnly() && strictOk && onRoute(loc, trip.legs[legIdx])) {
             TraceLog.event("bus_board", "by" to "at_stop", "spd" to spd, "busAt" to busAtStopAt)
-            val at = busAtStopAt
+            val at = strictAt(busAtStopAt)
             busAtStopAt = 0L; speeds.clear(); routeHits.clear()
             onBoarded(manual = false, at = at, source = "at_stop"); return
         }
         // 到过上车点、现在速度很快 → 大概率上车了
         // 地铁段不看车速：站口附近跑两步、打车到站口都会被当成「车开了」；地铁上车只认刷卡 / 地下基站 / 列车晃动
-        if (nearSince > 0 && spd != null && trusted && spd > 6f && !trip.legs[legIdx].isMetroOnly() && !speedMuted()) {
+        if (nearSince > 0 && spd != null && trusted && spd > 6f && !trip.legs[legIdx].isMetroOnly() && strictOk) {
             fastFixes++
-            if (fastFixes >= 3) onBoarded(manual = false, source = "speed")
+            if (fastFixes >= 3) onBoarded(manual = false, at = strictAt(System.currentTimeMillis()), source = "speed")
         } else if (spd != null && trusted && spd < 1f && fastFixes > 0) {
             fastFixes--   // 红灯/进站停一下不清零，真停下来才慢慢减
         }
