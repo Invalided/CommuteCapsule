@@ -243,7 +243,7 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 
 /** 时间窗里的时间块：半透明圆角框 + 大号等宽数字，点开选时间 */
 @Composable
-private fun TimeBox(text: String, dark: Boolean, onClick: () -> Unit) {
+internal fun TimeBox(text: String, dark: Boolean, onClick: () -> Unit) {
     Box(
         Modifier.clip(FieldShape)
             .background(Color.White.copy(alpha = if (dark) 0.08f else 0.55f))

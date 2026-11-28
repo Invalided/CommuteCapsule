@@ -183,3 +183,43 @@ fun TimeWheelSheet(title: String, initialMinute: Int, onDismiss: () -> Unit, onC
         }
     }
 }
+
+/** 选整数的玻璃底部弹层（如发车间隔），与 [TimeWheelSheet] 外观一致 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NumberWheelSheet(title: String, initial: Int, range: IntRange, unit: String, onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
+    val dark = isSystemInDarkTheme()
+    val ink = Fuse.ink(dark)
+    var picked by remember { mutableIntStateOf(initial.coerceIn(range.first, range.last)) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = Fuse.surface(dark), contentColor = ink,
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 20.dp).navigationBarsPadding(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = ink)
+            Spacer(Modifier.height(12.dp))
+            Box(Modifier.fillMaxWidth().height(ItemH * VISIBLE), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.padding(horizontal = 24.dp).fillMaxWidth().height(ItemH + 4.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color.White.copy(alpha = if (dark) 0.10f else 0.65f))
+                        .border(1.dp, if (dark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.95f), RoundedCornerShape(16.dp))
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                    WheelColumn(range.last - range.first + 1, picked - range.first, { picked = range.first + it }, { "${range.first + it}" })
+                    Text(unit, fontSize = 18.sp, color = ink, modifier = Modifier.padding(start = 6.dp))
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                PillButton(onClick = onDismiss, secondary = true, modifier = Modifier.weight(1f)) { Text("取消") }
+                PillButton(onClick = { onConfirm(picked) }, modifier = Modifier.weight(1f)) { Text("确定", fontWeight = FontWeight.Bold) }
+            }
+        }
+    }
+}

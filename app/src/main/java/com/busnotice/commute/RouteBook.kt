@@ -189,7 +189,7 @@ object RouteText {
 object RouteFile {
     const val HEADER = "# 通勤胶囊线路文件 v1"
 
-    class FormatError(val line: Int, msg: String) : Exception("第 $line 行：$msg")
+    class FormatError(val line: Int, val reason: String) : Exception("第 $line 行：$reason")
 
     private val MODES = mapOf("公交" to Candidate.Type.BUS, "地铁" to Candidate.Type.METRO, "班车" to Candidate.Type.SHUTTLE)
     private val PATTERNS = mapOf("站站停" to RouteDef.StopPattern.ALL, "只停起终点" to RouteDef.StopPattern.ENDS)
@@ -223,7 +223,7 @@ object RouteFile {
 
         fun finish() {
             val r = cur ?: return
-            if (r.stops.size < 2) throw FormatError(curLine, "线路「${r.fullName()}」至少需要 2 个站点")
+            if (r.stops.size < 2) throw FormatError(curLine, "线路「${r.fullName()}」至少应包含 2 个站点")
             out += r; cur = null; inStops = false
         }
 
@@ -241,11 +241,11 @@ object RouteFile {
                 curLine = n
                 return@forEachIndexed
             }
-            val r = cur ?: throw FormatError(n, "内容需要写在「[线路] 名称」之后")
+            val r = cur ?: throw FormatError(n, "内容应位于「[线路] 名称」行之后")
             if (inStops) { cur = r.copy(stops = r.stops + line); return@forEachIndexed }
             if (line == "站点:" || line == "站点：") { inStops = true; return@forEachIndexed }
             val kv = line.split(Regex("\\s*[=＝]\\s*"), limit = 2)
-            if (kv.size != 2) throw FormatError(n, "无法识别「$line」")
+            if (kv.size != 2) throw FormatError(n, "无法识别的内容「$line」")
             val (k, v) = kv
             val s = r.schedule
             cur = when (k) {
@@ -255,18 +255,18 @@ object RouteFile {
                 "末班" -> r.copy(schedule = s.copy(lastMin = RouteText.parseTime(v) ?: throw FormatError(n, "时间格式应为 HH:MM")))
                 "高峰间隔" -> r.copy(schedule = s.copy(peakHeadwayMin = minutes(v, n)))
                 "平峰间隔" -> r.copy(schedule = s.copy(offPeakHeadwayMin = minutes(v, n)))
-                "发车" -> r.copy(schedule = s.copy(departures = RouteText.parseTimes(v) ?: throw FormatError(n, "发车时刻格式应为 HH:MM，用空格分隔")))
+                "发车" -> r.copy(schedule = s.copy(departures = RouteText.parseTimes(v) ?: throw FormatError(n, "发车时刻格式应为 HH:MM，多个时刻以空格分隔")))
                 else -> throw FormatError(n, "未知字段「$k」")
             }
         }
         finish()
-        if (!sawHeader && out.isEmpty()) throw FormatError(1, "不是线路文件")
-        if (out.isEmpty()) throw FormatError(lines.size, "文件中没有线路")
+        if (!sawHeader && out.isEmpty()) throw FormatError(1, "该文件不是线路文件")
+        if (out.isEmpty()) throw FormatError(lines.size, "文件中未包含线路")
         return out
     }
 
     private fun minutes(v: String, n: Int): Int =
-        v.removeSuffix("分钟").trim().toIntOrNull()?.takeIf { it in 1..180 } ?: throw FormatError(n, "间隔应为 1–180 的分钟数")
+        v.removeSuffix("分钟").trim().toIntOrNull()?.takeIf { it in 1..180 } ?: throw FormatError(n, "间隔应为 1–180 之间的分钟数")
 }
 
 /** 导入合并 */

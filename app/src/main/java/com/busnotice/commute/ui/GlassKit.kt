@@ -315,9 +315,9 @@ fun glassFieldColors(dark: Boolean): TextFieldColors {
 
 /** 对话框里的文字按钮：确认用主色（浅色深、深色黄），其它用正文色 */
 @Composable
-fun DialogButton(text: String, onClick: () -> Unit, enabled: Boolean = true, primary: Boolean = false) {
+fun DialogButton(text: String, onClick: () -> Unit, enabled: Boolean = true, primary: Boolean = false, danger: Boolean = false) {
     val dark = isSystemInDarkTheme()
-    val c = if (primary) (if (dark) Fuse.Yellow else Fuse.Night) else Fuse.dim(dark)
+    val c = if (danger) DangerRed else if (primary) (if (dark) Fuse.Yellow else Fuse.Night) else Fuse.dim(dark)
     TextButton(onClick = onClick, enabled = enabled, shape = CircleShape) {
         Text(text, color = if (enabled) c else c.copy(alpha = 0.4f), fontWeight = if (primary) FontWeight.Bold else FontWeight.Normal)
     }
@@ -345,3 +345,6 @@ fun glassTimePickerColors(dark: Boolean): TimePickerColors {
         timeSelectorUnselectedContentColor = ink,
     )
 }
+
+/** 删除等不可撤销操作使用的文字颜色 */
+val DangerRed = Color(0xFFD64545)

@@ -45,7 +45,7 @@ fun SettingsScreen(
             )
         }
         if (onRoutes != null) item {
-            GlassRow(headline = "我的线路", supporting = "按站名新建线路、生成反向，导入或导出线路文件", onClick = onRoutes)
+            GlassRow(headline = "我的线路", supporting = "按站名新建线路、生成反向线路，导入或导出线路文件", onClick = onRoutes)
         }
         if (onChecks != null || onOnboarding != null) sectionHeader("权限与引导")
         if (onChecks != null) item {

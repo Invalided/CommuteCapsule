@@ -6,13 +6,18 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -36,6 +42,34 @@ import com.busnotice.commute.RouteStore
 import com.busnotice.commute.RouteText
 import com.busnotice.commute.RouteTiming
 
+/** 新建线路页的草稿；预览页返回时据此恢复填写内容 */
+private data class RouteDraft(
+    val name: String,
+    val mode: Candidate.Type = Candidate.Type.BUS,
+    val ends: Boolean = false,
+    val raw: String = "",
+    val endA: String = "",
+    val endB: String = "",
+    val reverse: Boolean = true,
+    val firstMin: Int = -1,
+    val lastMin: Int = -1,
+    val peak: Int = 0,
+    val offPeak: Int = 0,
+    val departures: List<Int> = emptyList(),
+) {
+    fun stops(): List<String> = if (ends) listOf(endA.trim(), endB.trim()).filter { it.isNotEmpty() } else RouteText.parse(raw).stops
+
+    fun isBlank() = raw.isBlank() && endA.isBlank() && endB.isBlank() && firstMin < 0 && lastMin < 0 && peak == 0 && offPeak == 0 && departures.isEmpty()
+
+    fun build(): List<RouteDef> {
+        val sch = if (mode == Candidate.Type.SHUTTLE) RouteSchedule(departures = departures)
+            else RouteSchedule(firstMin, lastMin, peak, offPeak)
+        val r = RouteDef(name = name.trim(), direction = if (reverse) "去程" else "", mode = mode,
+            stopPattern = if (ends) RouteDef.StopPattern.ENDS else RouteDef.StopPattern.ALL, stops = stops(), schedule = sch)
+        return if (reverse) listOf(r, r.reversed()) else listOf(r)
+    }
+}
+
 private sealed interface RouteStep {
     object List : RouteStep
     object New : RouteStep
@@ -45,29 +79,90 @@ private sealed interface RouteStep {
 
 private val MODE_LABELS = listOf(Candidate.Type.BUS to "公交", Candidate.Type.METRO to "地铁", Candidate.Type.SHUTTLE to "班车")
 
-/** 线路：新建（粘贴站名、一键生成反向）、预览微调、线路文件导入导出 */
+/** 默认线路名称：「线路 N」，N 取未被占用的最小序号 */
+private fun defaultName(existing: List<RouteDef>): String {
+    var n = 1
+    while (existing.any { it.name == "线路 $n" }) n++
+    return "线路 $n"
+}
+
+/** 我的线路：新建（按站名、可生成反向线路）、预览与编辑、线路文件导入导出 */
 @Composable
 fun RouteBookScreen(onBack: () -> Unit) {
+    val ctx = LocalContext.current
     var step by remember { mutableStateOf<RouteStep>(RouteStep.List) }
     var ver by remember { mutableIntStateOf(0) }
-    val back = { if (step == RouteStep.List) onBack() else step = RouteStep.List }
-    BackHandler { back() }
+    var draft by remember { mutableStateOf<RouteDraft?>(null) }
+    var confirm by remember { mutableStateOf<ConfirmKind?>(null) }
+    var previewDirty by remember { mutableStateOf(false) }
+
+    fun backFromNew() { if (draft?.isBlank() == false) confirm = ConfirmKind.DISCARD_NEW else { draft = null; step = RouteStep.List } }
+    fun backFromPreview() { if (previewDirty) confirm = ConfirmKind.LEAVE_PREVIEW else step = RouteStep.New }
+
+    BackHandler {
+        when (step) {
+            RouteStep.List -> onBack()
+            RouteStep.New -> backFromNew()
+            is RouteStep.Preview -> backFromPreview()
+            RouteStep.Files -> step = RouteStep.List
+        }
+    }
     when (val s = step) {
-        RouteStep.List -> RouteListPage(ver, onBack, onNew = { step = RouteStep.New }, onFiles = { step = RouteStep.Files }, onChanged = { ver++ })
-        RouteStep.New -> RouteNewPage(onBack = back, onNext = { step = RouteStep.Preview(it) })
-        is RouteStep.Preview -> RoutePreviewPage(s.routes, onBack = { step = RouteStep.New }, onSaved = { ver++; step = RouteStep.List })
-        RouteStep.Files -> RouteFilesPage(onBack = back, onImported = { ver++ })
+        RouteStep.List -> RouteListPage(ver, onBack,
+            onNew = { draft = RouteDraft(name = defaultName(RouteStore.all(ctx))); step = RouteStep.New },
+            onFiles = { step = RouteStep.Files }, onChanged = { ver++ })
+        RouteStep.New -> RouteNewPage(draft ?: RouteDraft(name = defaultName(RouteStore.all(ctx))), onChange = { draft = it },
+            onBack = { backFromNew() }, onNext = { previewDirty = false; step = RouteStep.Preview(it) })
+        is RouteStep.Preview -> RoutePreviewPage(s.routes,
+            onBack = { backFromPreview() },
+            onEdited = { routes, renamed ->
+                if (renamed == null) previewDirty = true
+                if (renamed != null) draft = draft?.copy(name = renamed)
+                step = RouteStep.Preview(routes)
+            },
+            onSaved = { ver++; draft = null; step = RouteStep.List })
+        RouteStep.Files -> RouteFilesPage(onBack = { step = RouteStep.List }, onImported = { ver++ })
+    }
+    when (confirm) {
+        ConfirmKind.DISCARD_NEW -> AlertDialog(
+            onDismissRequest = { confirm = null },
+            title = { Text("放弃新建线路？") },
+            text = { Text("已填写的内容尚未保存，退出后将丢失。") },
+            confirmButton = { DialogButton("退出", danger = true, onClick = { confirm = null; draft = null; step = RouteStep.List }) },
+            dismissButton = { DialogButton("继续编辑", primary = true, onClick = { confirm = null }) },
+        )
+        ConfirmKind.LEAVE_PREVIEW -> AlertDialog(
+            onDismissRequest = { confirm = null },
+            title = { Text("返回编辑？") },
+            text = { Text("预览中对站点的修改尚未保存，返回编辑后将不再保留。") },
+            confirmButton = { DialogButton("返回编辑", danger = true, onClick = { confirm = null; previewDirty = false; step = RouteStep.New }) },
+            dismissButton = { DialogButton("取消", primary = true, onClick = { confirm = null }) },
+        )
+        null -> Unit
     }
 }
 
+private enum class ConfirmKind { DISCARD_NEW, LEAVE_PREVIEW }
+
 @Composable
-private fun Hint(text: String) = Text(text, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 6.dp), color = androidx.compose.material3.LocalContentColor.current.copy(alpha = 0.65f))
+private fun Hint(text: String) =
+    Text(text, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 6.dp), color = LocalContentColor.current.copy(alpha = 0.65f))
+
+private fun scheduleText(r: RouteDef): String {
+    val s = r.schedule
+    return when {
+        s.departures.isNotEmpty() -> "固定发车 ${s.departures.size} 班"
+        s.peakHeadwayMin > 0 -> "高峰每 ${s.peakHeadwayMin} 分钟一班"
+        RouteTiming.peak(r) > 0 -> "发车间隔按默认值估算"
+        else -> "时刻依据乘车记录学习"
+    }
+}
 
 @Composable
 private fun RouteListPage(ver: Int, onBack: () -> Unit, onNew: () -> Unit, onFiles: () -> Unit, onChanged: () -> Unit) {
     val ctx = LocalContext.current
     val routes = remember(ver) { RouteStore.all(ctx) }
-    var confirmDelete by remember { mutableStateOf<RouteDef?>(null) }
+    var opened by remember { mutableStateOf<RouteDef?>(null) }
     GlassPage(title = "我的线路", onBack = onBack) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -75,165 +170,194 @@ private fun RouteListPage(ver: Int, onBack: () -> Unit, onNew: () -> Unit, onFil
                 PillButton(onClick = onFiles, secondary = true, modifier = Modifier.weight(1f)) { Text("线路文件") }
             }
         }
-        if (routes.isEmpty()) item { Hint("还没有线路。新建时只需按乘车顺序填站名，不用坐标，站点位置坐几趟后自动学会。") }
+        if (routes.isEmpty()) item { Hint("暂无线路。新建线路时按乘车顺序填写站名即可，无需坐标；站点位置将在乘车过程中自动学习。") }
         glassGroup(routes, key = "routes") { r ->
             GlassRow(
                 headline = r.fullName(),
-                supporting = "${MODE_LABELS.first { it.first == r.mode }.second} · ${r.stops.size} 站" +
-                    (if (r.stopPattern == RouteDef.StopPattern.ENDS) " · 只停起终点" else "") +
-                    " · " + scheduleText(r),
-                onClick = { confirmDelete = r },
+                supporting = listOfNotNull(
+                    MODE_LABELS.first { it.first == r.mode }.second, "${r.stops.size} 个站点",
+                    "只停起终点".takeIf { r.stopPattern == RouteDef.StopPattern.ENDS }, scheduleText(r),
+                ).joinToString(" · "),
+                onClick = { opened = r },
             )
         }
     }
-    confirmDelete?.let { r ->
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { confirmDelete = null },
+    opened?.let { r ->
+        AlertDialog(
+            onDismissRequest = { opened = null },
             title = { Text(r.fullName()) },
             text = { Text(r.stops.joinToString(" → ")) },
-            confirmButton = { DialogButton("删除", onClick = { RouteStore.delete(ctx, r.id); confirmDelete = null; onChanged() }) },
-            dismissButton = { DialogButton("关闭", onClick = { confirmDelete = null }, primary = true) },
+            confirmButton = { DialogButton("关闭", primary = true, onClick = { opened = null }) },
+            dismissButton = { DialogButton("删除线路", danger = true, onClick = { RouteStore.delete(ctx, r.id); opened = null; onChanged() }) },
         )
     }
 }
 
-private fun scheduleText(r: RouteDef): String {
-    val s = r.schedule
-    return when {
-        s.departures.isNotEmpty() -> "发车 ${s.departures.size} 班"
-        s.peakHeadwayMin > 0 -> "高峰约 ${s.peakHeadwayMin} 分钟一班"
-        RouteTiming.peak(r) > 0 -> "间隔按默认估算"
-        else -> "时刻靠学习"
+/** 时刻选择框：未设置时显示「未设置」，已设置时可清除 */
+@Composable
+private fun PickBox(label: String, text: String?, onClick: () -> Unit, onClear: () -> Unit, modifier: Modifier = Modifier) {
+    val dark = isSystemInDarkTheme()
+    Column(modifier) {
+        Text(label, fontSize = 14.sp, color = Fuse.dim(dark))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+            TimeBox(text ?: "未设置", dark, onClick)
+            if (text != null) Text("清除", fontSize = 14.sp, color = Fuse.dim(dark),
+                modifier = Modifier.clickable(onClick = onClear).padding(horizontal = 10.dp, vertical = 8.dp))
+        }
     }
 }
 
-@Composable
-private fun RouteNewPage(onBack: () -> Unit, onNext: (List<RouteDef>) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var mode by remember { mutableStateOf(Candidate.Type.BUS) }
-    var ends by remember { mutableStateOf(false) }
-    var raw by remember { mutableStateOf("") }
-    var first by remember { mutableStateOf("") }
-    var last by remember { mutableStateOf("") }
-    var endA by remember { mutableStateOf("") }
-    var endB by remember { mutableStateOf("") }
-    var reverse by remember { mutableStateOf(true) }
-    var firstMin by remember { mutableStateOf("") }
-    var lastMin by remember { mutableStateOf("") }
-    var peak by remember { mutableStateOf("") }
-    var offPeak by remember { mutableStateOf("") }
-    var deps by remember { mutableStateOf("") }
+private enum class PickKind { FIRST, LAST, PEAK, OFF_PEAK, DEPARTURE }
 
-    val parsed = remember(raw) { RouteText.parse(raw) }
-    val stops = if (ends) listOf(endA.trim(), endB.trim()).filter { it.isNotEmpty() } else parsed.stops
-    val firstT = firstMin.takeIf { it.isNotBlank() }?.let { RouteText.parseTime(it) }
-    val lastT = lastMin.takeIf { it.isNotBlank() }?.let { RouteText.parseTime(it) }
-    val peakN = peak.takeIf { it.isNotBlank() }?.toIntOrNull()
-    val offN = offPeak.takeIf { it.isNotBlank() }?.toIntOrNull()
-    val depsL = deps.takeIf { it.isNotBlank() }?.let { RouteText.parseTimes(it) }
-    val timeErr = (firstMin.isNotBlank() && firstT == null) || (lastMin.isNotBlank() && lastT == null) ||
-        (peak.isNotBlank() && peakN !in 1..180) || (offPeak.isNotBlank() && offN !in 1..180) || (deps.isNotBlank() && depsL == null)
-    val ok = name.isNotBlank() && stops.size >= 2 && !timeErr
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RouteNewPage(d: RouteDraft, onChange: (RouteDraft) -> Unit, onBack: () -> Unit, onNext: (List<RouteDef>) -> Unit) {
+    val dark = isSystemInDarkTheme()
+    val parsed = remember(d.raw) { RouteText.parse(d.raw) }
+    val stops = d.stops()
+    val ok = d.name.isNotBlank() && stops.size >= 2
+    var pick by remember { mutableStateOf<PickKind?>(null) }
 
     GlassPage(title = "新建线路", onBack = onBack) {
         item {
             GlassCard {
-                GlassField(name, { name = it }, label = "线路名称", modifier = Modifier.fillMaxWidth())
+                GlassField(d.name, { onChange(d.copy(name = it)) }, label = "线路名称", modifier = Modifier.fillMaxWidth())
             }
         }
         item {
             GlassCard {
                 SectionLabel("交通方式")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
-                    MODE_LABELS.forEach { (t, l) -> GlassChip(mode == t, { mode = t }, l, Modifier.weight(1f)) }
+                    MODE_LABELS.forEach { (t, l) -> GlassChip(d.mode == t, { onChange(d.copy(mode = t)) }, l, Modifier.weight(1f)) }
                 }
                 SectionLabel("停站方式", Modifier.padding(top = 12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
-                    GlassChip(!ends, { ends = false }, "站站停", Modifier.weight(1f))
-                    GlassChip(ends, {
-                        if (!ends) { endA = endA.ifEmpty { parsed.stops.firstOrNull().orEmpty() }; endB = endB.ifEmpty { parsed.stops.lastOrNull().orEmpty() } }
-                        ends = true
+                    GlassChip(!d.ends, { onChange(d.copy(ends = false)) }, "站站停", Modifier.weight(1f))
+                    GlassChip(d.ends, {
+                        onChange(d.copy(ends = true,
+                            endA = d.endA.ifEmpty { parsed.stops.firstOrNull().orEmpty() },
+                            endB = d.endB.ifEmpty { parsed.stops.lastOrNull().orEmpty() }))
                     }, "只停起终点", Modifier.weight(1f))
                 }
             }
         }
         item {
             GlassCard {
-                if (ends) {
-                    Text("起点和终点", fontWeight = FontWeight.SemiBold)
-                    GlassField(endA, { endA = it }, label = "起点站", modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                    GlassField(endB, { endB = it }, label = "终点站", modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                    Hint("途中不停的车只填两头。按整段用时学习，路上不经过站点不算异常。")
+                if (d.ends) {
+                    Text("起点站与终点站", fontWeight = FontWeight.SemiBold)
+                    GlassField(d.endA, { onChange(d.copy(endA = it)) }, label = "起点站", modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                    GlassField(d.endB, { onChange(d.copy(endB = it)) }, label = "终点站", modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                    Hint("适用于途中不停靠的车辆。系统按全程用时学习，途经站点不作为异常判断依据。")
                 } else {
-                    Text("站点（按乘车顺序，一行一个）", fontWeight = FontWeight.SemiBold)
-                    GlassField(raw, { raw = it }, singleLine = false, placeholder = "起点站\n第二站\n…\n终点站",
+                    Text("站点（按乘车顺序，每行一个）", fontWeight = FontWeight.SemiBold)
+                    GlassField(d.raw, { onChange(d.copy(raw = it)) }, singleLine = false, placeholder = "起点站\n第二站\n…\n终点站",
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                     if (parsed.stops.isNotEmpty()) {
                         val cleaned = listOfNotNull(
                             parsed.droppedBlank.takeIf { it > 0 }?.let { "$it 个空行" },
                             parsed.strippedNumbers.takeIf { it > 0 }?.let { "$it 处序号" },
                         )
-                        Text("已识别 ${parsed.stops.size} 站" + if (cleaned.isEmpty()) "" else " · 已去掉" + cleaned.joinToString("和"),
+                        Text("已识别 ${parsed.stops.size} 个站点" + if (cleaned.isEmpty()) "" else "（已去除" + cleaned.joinToString("、") + "）",
                             fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
                     }
-                    Hint("可以从聊天记录或网页直接粘贴。只要站名，不用坐标，位置坐几趟就学会。")
+                    Hint("支持直接粘贴站名列表，序号与空行将自动去除。无需填写坐标，站点位置将在乘车过程中自动学习。")
                 }
             }
         }
         item {
             GlassCard {
-                Text("时刻（可选）", fontWeight = FontWeight.SemiBold)
-                if (mode == Candidate.Type.SHUTTLE) {
-                    GlassField(deps, { deps = it }, label = "发车时刻", placeholder = "例如 07:10 07:40",
-                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                    Hint("班次制的车填起点发车时刻。不填就只靠坐过的记录学习。")
+                Text("时刻（选填）", fontWeight = FontWeight.SemiBold)
+                if (d.mode == Candidate.Type.SHUTTLE) {
+                    Text("发车时刻", fontSize = 14.sp, color = Fuse.dim(dark), modifier = Modifier.padding(top = 10.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(top = 6.dp)) {
+                        d.departures.forEach { m ->
+                            GlassChip(true, { onChange(d.copy(departures = d.departures - m)) }, RouteText.hhmm(m) + " ×")
+                        }
+                        GlassChip(false, { pick = PickKind.DEPARTURE }, "添加时刻")
+                    }
+                    Hint("填写始发站的发车时刻，点击已添加的时刻可将其移除。未填写时仅依据乘车记录学习。")
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                        GlassField(firstMin, { firstMin = it }, label = "首班", placeholder = "HH:MM", modifier = Modifier.weight(1f))
-                        GlassField(lastMin, { lastMin = it }, label = "末班", placeholder = "HH:MM", modifier = Modifier.weight(1f))
+                    Row(Modifier.padding(top = 10.dp)) {
+                        PickBox("首班", d.firstMin.takeIf { it >= 0 }?.let(RouteText::hhmm), { pick = PickKind.FIRST },
+                            { onChange(d.copy(firstMin = -1)) }, Modifier.weight(1f))
+                        PickBox("末班", d.lastMin.takeIf { it >= 0 }?.let(RouteText::hhmm), { pick = PickKind.LAST },
+                            { onChange(d.copy(lastMin = -1)) }, Modifier.weight(1f))
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                        GlassField(peak, { peak = it.filter(Char::isDigit) }, label = "高峰间隔（分钟）", modifier = Modifier.weight(1f))
-                        GlassField(offPeak, { offPeak = it.filter(Char::isDigit) }, label = "平峰间隔（分钟）", modifier = Modifier.weight(1f))
+                    Row(Modifier.padding(top = 12.dp)) {
+                        PickBox("高峰间隔", d.peak.takeIf { it > 0 }?.let { "$it 分钟" }, { pick = PickKind.PEAK },
+                            { onChange(d.copy(peak = 0)) }, Modifier.weight(1f))
+                        PickBox("平峰间隔", d.offPeak.takeIf { it > 0 }?.let { "$it 分钟" }, { pick = PickKind.OFF_PEAK },
+                            { onChange(d.copy(offPeak = 0)) }, Modifier.weight(1f))
                     }
-                    val d = RouteTiming.defaultPeak(mode)
-                    Hint("不填就按默认估算：高峰约 $d 分钟一班，平峰约 ${(d * 3 + 1) / 2} 分钟。填了以你填的为准。")
+                    val p = RouteTiming.defaultPeak(d.mode)
+                    Hint("未填写时按默认值估算：高峰每 $p 分钟一班，平峰每 ${(p * 3 + 1) / 2} 分钟一班。已填写的以填写内容为准。")
                 }
-                if (timeErr) Text("时间写成 HH:MM，间隔填 1–180 的分钟数", fontSize = 13.sp, color = androidx.compose.ui.graphics.Color(0xFFD64545), modifier = Modifier.padding(top = 6.dp))
             }
         }
         item {
             GlassCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("同时生成反向线路", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Switch(checked = reverse, onCheckedChange = { reverse = it })
+                    Switch(checked = d.reverse, onCheckedChange = { onChange(d.copy(reverse = it)) })
                 }
             }
         }
         item {
-            PillButton(enabled = ok, modifier = Modifier.fillMaxWidth(), onClick = {
-                val sch = if (mode == Candidate.Type.SHUTTLE) RouteSchedule(departures = depsL.orEmpty())
-                    else RouteSchedule(firstT ?: -1, lastT ?: -1, peakN ?: 0, offN ?: 0)
-                val r = RouteDef(name = name.trim(), direction = if (reverse) "去程" else "", mode = mode,
-                    stopPattern = if (ends) RouteDef.StopPattern.ENDS else RouteDef.StopPattern.ALL, stops = stops, schedule = sch)
-                onNext(if (reverse) listOf(r, r.reversed()) else listOf(r))
-            }) { Text("下一步：预览") }
+            PillButton(enabled = ok, modifier = Modifier.fillMaxWidth(), onClick = { onNext(d.build()) }) { Text("下一步：预览") }
+            if (!ok) Hint(if (d.name.isBlank()) "请填写线路名称。" else "请至少填写 2 个站点。")
         }
+    }
+
+    when (val k = pick) {
+        PickKind.FIRST, PickKind.LAST, PickKind.DEPARTURE -> TimeWheelSheet(
+            title = when (k) { PickKind.FIRST -> "首班时间"; PickKind.LAST -> "末班时间"; else -> "发车时刻" },
+            initialMinute = when (k) {
+                PickKind.FIRST -> d.firstMin.takeIf { it >= 0 } ?: (6 * 60)
+                PickKind.LAST -> d.lastMin.takeIf { it >= 0 } ?: (22 * 60)
+                else -> d.departures.lastOrNull()?.let { (it + 20).coerceAtMost(23 * 60 + 59) } ?: (7 * 60)
+            },
+            onDismiss = { pick = null },
+            onConfirm = { m ->
+                onChange(when (k) {
+                    PickKind.FIRST -> d.copy(firstMin = m)
+                    PickKind.LAST -> d.copy(lastMin = m)
+                    else -> d.copy(departures = (d.departures + m).distinct().sorted())
+                })
+                pick = null
+            },
+        )
+        PickKind.PEAK, PickKind.OFF_PEAK -> {
+            val def = RouteTiming.defaultPeak(d.mode).coerceAtLeast(1)
+            NumberWheelSheet(
+                title = if (k == PickKind.PEAK) "高峰间隔" else "平峰间隔",
+                initial = if (k == PickKind.PEAK) d.peak.takeIf { it > 0 } ?: def else d.offPeak.takeIf { it > 0 } ?: ((def * 3 + 1) / 2),
+                range = 1..60, unit = "分钟",
+                onDismiss = { pick = null },
+                onConfirm = { v -> onChange(if (k == PickKind.PEAK) d.copy(peak = v) else d.copy(offPeak = v)); pick = null },
+            )
+        }
+        null -> Unit
     }
 }
 
 @Composable
-private fun RoutePreviewPage(initial: List<RouteDef>, onBack: () -> Unit, onSaved: () -> Unit) {
+private fun RoutePreviewPage(routes: List<RouteDef>, onBack: () -> Unit, onEdited: (List<RouteDef>, String?) -> Unit, onSaved: () -> Unit) {
     val ctx = LocalContext.current
-    var routes by remember { mutableStateOf(initial) }
-    var editing by remember { mutableStateOf<Pair<Int, Int>?>(null) } // 线路序号, 站序号（-1 = 插入到末站前）
+    val dark = isSystemInDarkTheme()
+    var editing by remember { mutableStateOf<Pair<Int, Int>?>(null) } // 线路序号、站点序号（-1 表示添加站点）
+    var renaming by remember { mutableStateOf(false) }
     var text by remember { mutableStateOf("") }
     GlassPage(title = "预览", onBack = onBack) {
         item { Text("将保存 ${routes.size} 条线路", fontWeight = FontWeight.SemiBold) }
         routes.forEachIndexed { ri, r ->
             item(key = r.id) {
                 GlassCard {
-                    Text(r.fullName(), fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable { renaming = true; text = r.name }) {
+                        Text(r.fullName(), fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+                        Text("重命名", fontSize = 13.sp, color = Fuse.dim(dark))
+                    }
                     r.stops.forEachIndexed { si, st ->
                         val passOnly = r.stopPattern == RouteDef.StopPattern.ENDS && si in 1 until r.stops.lastIndex
                         Row(Modifier.fillMaxWidth().clickable { editing = ri to si; text = st }.padding(vertical = 8.dp),
@@ -241,20 +365,19 @@ private fun RoutePreviewPage(initial: List<RouteDef>, onBack: () -> Unit, onSave
                             Text("●", fontSize = 10.sp, modifier = Modifier.width(20.dp))
                             Text(st, modifier = Modifier.weight(1f),
                                 fontWeight = if (si == 0 || si == r.stops.lastIndex) FontWeight.SemiBold else FontWeight.Normal)
-                            Text(if (passOnly) "途经，不停" else "修改", fontSize = 13.sp,
-                                color = androidx.compose.material3.LocalContentColor.current.copy(alpha = 0.5f))
+                            Text(if (passOnly) "途经不停靠" else "编辑", fontSize = 13.sp, color = Fuse.dim(dark))
                         }
                     }
-                    Text("+ 插入站", fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    Text("添加站点", fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.clickable { editing = ri to -1; text = "" }.padding(top = 4.dp))
                     Hint(scheduleText(r))
                 }
             }
         }
-        item { Hint("去程和返程可以分别修改，适合单行道、来回停靠站点不同的线路。") }
+        item { Hint("去程与返程可分别编辑，适用于往返停靠站点不同的线路。") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                PillButton(onClick = onBack, secondary = true, modifier = Modifier.weight(1f)) { Text("返回修改") }
+                PillButton(onClick = onBack, secondary = true, modifier = Modifier.weight(1f)) { Text("返回编辑") }
                 PillButton(onClick = {
                     RouteStore.save(ctx, RouteMerge.merge(RouteStore.all(ctx), routes, RouteMerge.Conflict.KEEP_BOTH))
                     Toast.makeText(ctx, "已保存 ${routes.size} 条线路", Toast.LENGTH_SHORT).show()
@@ -263,18 +386,40 @@ private fun RoutePreviewPage(initial: List<RouteDef>, onBack: () -> Unit, onSave
             }
         }
     }
+    if (renaming) {
+        AlertDialog(
+            onDismissRequest = { renaming = false },
+            title = { Text("线路名称") },
+            text = {
+                Column {
+                    GlassField(text, { text = it }, label = "线路名称", modifier = Modifier.fillMaxWidth())
+                    if (routes.size > 1) Hint("去程与返程将同步更新。")
+                }
+            },
+            confirmButton = {
+                DialogButton("确定", enabled = text.isNotBlank(), primary = true, onClick = {
+                    val n = text.trim()
+                    renaming = false
+                    onEdited(routes.map { it.copy(name = n) }, n)
+                })
+            },
+            dismissButton = { DialogButton("取消", onClick = { renaming = false }) },
+        )
+    }
     editing?.let { (ri, si) ->
         val r = routes[ri]
         fun update(newStops: List<String>) {
-            routes = routes.toMutableList().also { it[ri] = r.copy(stops = newStops) }; editing = null
+            editing = null
+            onEdited(routes.toMutableList().also { it[ri] = r.copy(stops = newStops) }, null)
         }
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { editing = null },
-            title = { Text(if (si < 0) "插入站（${r.direction.ifEmpty { r.name }}）" else "编辑「${r.stops[si]}」") },
+            title = { Text(if (si < 0) "添加站点" else "编辑站点") },
             text = {
                 Column {
-                    GlassField(text, { text = it }, label = "站名", modifier = Modifier.fillMaxWidth())
-                    if (si < 0) Hint("插入到终点站之前；需要调整位置可再修改。")
+                    GlassField(text, { text = it }, label = "站点名称", modifier = Modifier.fillMaxWidth())
+                    if (si < 0) Hint("新站点将添加在终点站之前。")
+                    else if (r.stops.size <= 2) Hint("线路至少需要 2 个站点，当前站点不可删除。")
                 }
             },
             confirmButton = {
@@ -285,7 +430,8 @@ private fun RoutePreviewPage(initial: List<RouteDef>, onBack: () -> Unit, onSave
                 })
             },
             dismissButton = {
-                if (si >= 0) DialogButton("删除这站", enabled = r.stops.size > 2, onClick = { update(r.stops.filterIndexed { i, _ -> i != si }) })
+                if (si >= 0) DialogButton("删除站点", danger = true, enabled = r.stops.size > 2,
+                    onClick = { update(r.stops.filterIndexed { i, _ -> i != si }) })
                 else DialogButton("取消", onClick = { editing = null })
             },
         )
@@ -314,15 +460,15 @@ private fun RouteFilesPage(onBack: () -> Unit, onImported: () -> Unit) {
         val text = runCatching {
             ctx.contentResolver.openInputStream(uri)?.use { s -> s.readBytes().takeIf { it.size <= 1_000_000 }?.toString(Charsets.UTF_8) }
         }.getOrNull()
-        if (text == null) { error = "无法读取文件，或文件过大"; return@rememberLauncherForActivityResult }
-        try { incoming = RouteFile.read(text) } catch (e: RouteFile.FormatError) { error = "文件格式有误，${e.message}。已有线路未改动。" }
+        if (text == null) { error = "无法读取该文件，或文件超过 1 MB。"; return@rememberLauncherForActivityResult }
+        try { incoming = RouteFile.read(text) } catch (e: RouteFile.FormatError) { error = "文件格式有误（第 ${e.line} 行）：${e.reason}。已有线路未作更改。" }
     }
 
     GlassPage(title = "线路文件", onBack = onBack) {
         item {
             GlassCard {
                 Text("导出", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                if (routes.isEmpty()) Hint("还没有可导出的线路。")
+                if (routes.isEmpty()) Hint("暂无可导出的线路。")
                 else {
                     Hint("选择要导出的线路（默认全选）")
                     routes.forEach { r ->
@@ -332,7 +478,7 @@ private fun RouteFilesPage(onBack: () -> Unit, onImported: () -> Unit) {
                             Text(r.fullName())
                         }
                     }
-                    Hint("已选 ${selected.size} 条 · 不含行程记录和位置")
+                    Hint("已选 ${selected.size} 条，不含行程记录与位置信息")
                     PillButton(onClick = { exportLauncher.launch("线路.txt") }, enabled = selected.isNotEmpty(), secondary = true,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("导出线路文件") }
                 }
@@ -345,25 +491,25 @@ private fun RouteFilesPage(onBack: () -> Unit, onImported: () -> Unit) {
                 if (inc == null) {
                     PillButton(onClick = { importLauncher.launch(arrayOf("text/plain", "application/octet-stream", "*/*")) },
                         secondary = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("选择线路文件") }
-                    error?.let { Text(it, fontSize = 13.sp, color = androidx.compose.ui.graphics.Color(0xFFD64545), modifier = Modifier.padding(top = 6.dp)) }
+                    error?.let { Text(it, fontSize = 13.sp, color = DangerRed, modifier = Modifier.padding(top = 6.dp)) }
                 } else {
-                    Hint("文件里有 ${inc.size} 条线路")
+                    Hint("文件包含 ${inc.size} 条线路")
                     inc.forEach { r ->
                         val same = RouteMerge.status(routes, r) == RouteMerge.Status.SAME_NAME
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                             Text(r.fullName(), fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                            Text("${r.stops.size} 站", modifier = Modifier.padding(horizontal = 8.dp))
+                            Text("${r.stops.size} 个站点", modifier = Modifier.padding(horizontal = 8.dp))
                             Text(if (same) "同名已存在" else "新增", fontWeight = FontWeight.SemiBold,
-                                color = if (same) androidx.compose.ui.graphics.Color(0xFFD9822B) else androidx.compose.ui.graphics.Color(0xFF2E9E5B))
+                                color = if (same) Color(0xFFD9822B) else Color(0xFF2E9E5B))
                         }
                     }
                     if (inc.any { RouteMerge.status(routes, it) == RouteMerge.Status.SAME_NAME }) {
-                        SectionLabel("同名线路", Modifier.padding(top = 8.dp))
+                        SectionLabel("同名线路处理方式", Modifier.padding(top = 8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
                             GlassChip(policy == RouteMerge.Conflict.KEEP_BOTH, { policy = RouteMerge.Conflict.KEEP_BOTH }, "保留两份", Modifier.weight(1f))
-                            GlassChip(policy == RouteMerge.Conflict.REPLACE, { policy = RouteMerge.Conflict.REPLACE }, "用文件里的替换", Modifier.weight(1f))
+                            GlassChip(policy == RouteMerge.Conflict.REPLACE, { policy = RouteMerge.Conflict.REPLACE }, "以文件内容替换", Modifier.weight(1f))
                         }
-                        Hint("替换只改站点和时刻，已学到的位置和用时保留。")
+                        Hint("替换仅更新站点、交通方式与时刻，已学习的位置与用时将保留。")
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 10.dp)) {
                         PillButton(onClick = { incoming = null }, secondary = true, modifier = Modifier.weight(1f)) { Text("取消") }
@@ -376,6 +522,6 @@ private fun RouteFilesPage(onBack: () -> Unit, onImported: () -> Unit) {
                 }
             }
         }
-        item { Hint("文件只在本机读取，不上传。格式出错会指出第几行，不改动已有线路。") }
+        item { Hint("线路文件仅在本机读取，不会上传。文件格式有误时将提示出错行号，已有线路不受影响。") }
     }
 }
